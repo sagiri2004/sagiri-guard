@@ -1,386 +1,342 @@
 #include "network.h"
 
+// --- Thay đổi cho Windows ---
+#define _CRT_SECURE_NO_WARNINGS // Tắt cảnh báo cho fopen, snprintf
+#define _WINSOCK_DEPRECATED_NO_WARNINGS // Tắt cảnh báo cho một số hàm cũ
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <errno.h>
-#include <sys/stat.h>
-#include <netinet/in.h>
+#include <sys/stat.h> // Dùng cho _stat
 
-#define BACKLOG 16                  // Số lượng kết nối tối đa có thể chờ trong hàng đợi
-#define DEFAULT_HTTP_PORT 80        // Cổng HTTP mặc định
-#define MULTIPART_BOUNDARY "----CGoNetworkBoundary" // Ranh giới cho dữ liệu multipart/form-data
+// Link với thư viện ws2_32.lib
+#pragma comment(lib, "ws2_32.lib")
+
+// Các include của POSIX đã bị xóa (unistd.h, arpa/inet.h, v.v.)
+// vì winsock2.h và ws2tcpip.h đã thay thế chúng.
+// --- Kết thúc thay đổi cho Windows ---
+
+
+#define BACKLOG 16                  
+#define DEFAULT_HTTP_PORT 80
+#define MULTIPART_BOUNDARY "----CGoNetworkBoundary" 
+
+// --- Hàm mới cho Winsock ---
+int network_init(void) {
+    WSADATA wsaData;
+    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (result != 0) {
+        return -1; // Lỗi: Không thể khởi tạo Winsock
+    }
+    return 0;
+}
+
+void network_cleanup(void) {
+    WSACleanup();
+}
+// --- Kết thúc hàm mới ---
 
 /**
- * @brief Thiết lập tùy chọn SO_REUSEADDR cho một socket.
- * * Tùy chọn này cho phép server khởi động lại và bind vào một địa chỉ/cổng đã được sử dụng gần đây
- * mà không cần chờ hết thời gian timeout (trạng thái TIME_WAIT).
- * * @param fd File descriptor của socket.
- * @return 0 nếu thành công, -1 nếu thất bại.
+ * @brief Thiết lập tùy chọn SO_REUSEADDR cho một socket. (Phiên bản Windows)
  */
-static int set_reuseaddr(int fd) {
+static int set_reuseaddr(SOCKET fd) {
     int opt = 1;
-    return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // Thay đổi: tham số thứ 4 là (const char*)
+    return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
 }
 
 /**
- * @brief Lấy thông tin địa chỉ (addrinfo) cho một host và port cụ thể.
- * * Đây là hàm trợ giúp để gói gọn việc gọi `getaddrinfo`, giúp chuyển đổi tên miền (host)
- * và số hiệu cổng (port) thành một tập hợp các cấu trúc địa chỉ socket.
- * * @param host Tên miền hoặc địa chỉ IP.
- * @param port Số hiệu cổng.
- * @param socktype Loại socket (ví dụ: SOCK_STREAM cho TCP, SOCK_DGRAM cho UDP).
- * @param flags Các cờ bổ sung cho `getaddrinfo` (ví dụ: AI_PASSIVE cho server).
- * @param out Con trỏ để lưu trữ kết quả danh sách các addrinfo.
- * @return 0 nếu thành công, khác 0 nếu có lỗi.
+ * @brief Lấy thông tin địa chỉ (addrinfo).
+ * (Hàm này giữ nguyên vì getaddrinfo là chuẩn)
  */
 static int get_addrinfo_for(const char* host, int port, int socktype, int flags, struct addrinfo** out) {
     struct addrinfo hints;
     char port_str[16];
-    memset(&hints, 0, sizeof(hints)); // Khởi tạo hints với giá trị 0
-    hints.ai_family = AF_UNSPEC;      // Chấp nhận cả IPv4 và IPv6
-    hints.ai_socktype = socktype;     // Loại socket được chỉ định
-    hints.ai_flags = flags;           // Cờ cho biết mục đích sử dụng (server/client)
-    snprintf(port_str, sizeof(port_str), "%d", port); // Chuyển đổi port từ int sang chuỗi
-    return getaddrinfo(host, port_str, &hints, out); // Lấy thông tin địa chỉ
+    memset(&hints, 0, sizeof(hints)); 
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = socktype;
+    hints.ai_flags = flags;
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    return getaddrinfo(host, port_str, &hints, out);
 }
 
 /**
- * @brief Tạo và bind một socket tới một host và port.
- * * Hàm này dùng cho phía server. Nó lặp qua danh sách các địa chỉ có thể có
- * từ `getaddrinfo` và cố gắng tạo và bind socket vào địa chỉ đầu tiên thành công.
- * * @param host Tên miền hoặc địa chỉ IP để bind. Nếu là NULL, sẽ bind vào tất cả các interface.
- * @param port Số hiệu cổng để bind.
- * @param socktype Loại socket (SOCK_STREAM hoặc SOCK_DGRAM).
- * @return File descriptor của socket đã được bind nếu thành công, -1 nếu thất bại.
+ * @brief Tạo và bind một socket. (Phiên bản Windows)
+ * @return SOCKET nếu thành công, INVALID_SOCKET nếu thất bại.
  */
-static int bind_socket(const char* host, int port, int socktype) {
+static SOCKET bind_socket(const char* host, int port, int socktype) {
     struct addrinfo* res = NULL;
-    // Lấy danh sách địa chỉ để lắng nghe (AI_PASSIVE)
     int rc = get_addrinfo_for(host, port, socktype, AI_PASSIVE, &res);
     if (rc != 0) {
-        return -1; // Không thể phân giải địa chỉ
+        return INVALID_SOCKET; // Thay -1 bằng INVALID_SOCKET
     }
 
-    int fd = -1;
-    // Lặp qua từng địa chỉ trong danh sách liên kết
+    SOCKET fd = INVALID_SOCKET; // Thay int bằng SOCKET, -1 bằng INVALID_SOCKET
     for (struct addrinfo* p = res; p; p = p->ai_next) {
-        // Tạo socket với thông tin từ addrinfo
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (fd < 0) {
-            continue; // Thất bại, thử địa chỉ tiếp theo
+        if (fd == INVALID_SOCKET) { // Thay < 0 bằng == INVALID_SOCKET
+            continue;
         }
-        set_reuseaddr(fd); // Cho phép tái sử dụng địa chỉ
-        // Bind socket vào địa chỉ
-        if (bind(fd, p->ai_addr, p->ai_addrlen) == 0) {
-            break; // Bind thành công, thoát khỏi vòng lặp
+        set_reuseaddr(fd); 
+        if (bind(fd, p->ai_addr, (int)p->ai_addrlen) == 0) {
+            break;
         }
-        close(fd); // Bind thất bại, đóng socket và thử lại
-        fd = -1;
+        closesocket(fd); // Thay close() bằng closesocket()
+        fd = INVALID_SOCKET;
     }
 
-    freeaddrinfo(res); // Giải phóng bộ nhớ của danh sách addrinfo
+    freeaddrinfo(res);
     return fd;
 }
 
 /**
- * @brief Tạo và kết nối một socket tới một host và port.
- * * Hàm này dùng cho phía client. Nó lặp qua danh sách các địa chỉ có thể có
- * và cố gắng kết nối tới địa chỉ đầu tiên thành công.
- * * @param host Tên miền hoặc địa chỉ IP của server.
- * @param port Số hiệu cổng của server.
- * @param socktype Loại socket (SOCK_STREAM hoặc SOCK_DGRAM).
- * @return File descriptor của socket đã kết nối nếu thành công, -1 nếu thất bại.
+ * @brief Tạo và kết nối một socket. (Phiên bản Windows)
+ * @return SOCKET nếu thành công, INVALID_SOCKET nếu thất bại.
  */
-static int connect_socket(const char* host, int port, int socktype) {
+static SOCKET connect_socket(const char* host, int port, int socktype) {
     struct addrinfo* res = NULL;
-    // Lấy danh sách địa chỉ của server
     int rc = get_addrinfo_for(host, port, socktype, 0, &res);
     if (rc != 0) {
-        return -1; // Không thể phân giải địa chỉ
+        return INVALID_SOCKET;
     }
 
-    int fd = -1;
-    // Lặp qua từng địa chỉ trong danh sách
+    SOCKET fd = INVALID_SOCKET;
     for (struct addrinfo* p = res; p; p = p->ai_next) {
-        // Tạo socket
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (fd < 0) {
-            continue; // Thất bại, thử địa chỉ tiếp theo
+        if (fd == INVALID_SOCKET) {
+            continue;
         }
-        // Kết nối tới server
-        if (connect(fd, p->ai_addr, p->ai_addrlen) == 0) {
-            break; // Kết nối thành công, thoát vòng lặp
+        if (connect(fd, p->ai_addr, (int)p->ai_addrlen) == 0) {
+            break;
         }
-        close(fd); // Kết nối thất bại, đóng socket và thử lại
-        fd = -1;
+        closesocket(fd);
+        fd = INVALID_SOCKET;
     }
 
-    freeaddrinfo(res); // Giải phóng bộ nhớ
+    freeaddrinfo(res);
     return fd;
 }
 
 /**
- * @brief Gửi toàn bộ dữ liệu trong buffer qua socket.
- * * Hàm `send()` có thể không gửi hết dữ liệu trong một lần gọi. Hàm này đảm bảo
- * tất cả dữ liệu được gửi đi bằng cách lặp lại việc gọi `send()` cho đến khi
- * toàn bộ buffer được gửi hoặc có lỗi xảy ra.
- * * @param fd File descriptor của socket.
- * @param data Con trỏ tới buffer chứa dữ liệu cần gửi.
- * @param len Độ dài của dữ liệu.
- * @return 0 nếu gửi thành công toàn bộ, -1 nếu có lỗi.
+ * @brief Gửi toàn bộ dữ liệu. (Phiên bản Windows)
  */
-static int send_all(int fd, const char* data, size_t len) {
+static int send_all(SOCKET fd, const char* data, size_t len) {
     size_t total = 0;
     while (total < len) {
-        // Gửi phần dữ liệu còn lại
-        ssize_t sent = send(fd, data + total, len - total, 0);
+        // Thay đổi: send() trả về 'int', không phải 'ssize_t'
+        int sent = send(fd, data + total, (int)(len - total), 0);
         if (sent < 0) {
-            if (errno == EINTR) { // Bị ngắt bởi một tín hiệu, thử lại
+            // Thay đổi: dùng WSAGetLastError() thay vì errno
+            if (WSAGetLastError() == WSAEINTR) { 
                 continue;
             }
-            return -1; // Lỗi thực sự
+            return -1; // Lỗi
         }
-        if (sent == 0) { // Socket đã đóng
+        if (sent == 0) { // SOCKET_ERROR (thường là -1) mới là lỗi
             break;
         }
-        total += (size_t)sent; // Cộng dồn số byte đã gửi
+        total += (size_t)sent;
     }
-    return (total == len) ? 0 : -1; // Trả về 0 chỉ khi gửi đủ
+    return (total == len) ? 0 : -1;
 }
 
 /**
- * @brief Nhận dữ liệu từ socket và lưu vào buffer cho đến khi đầy hoặc kết nối đóng.
- * * Hàm này đọc dữ liệu từ socket và đảm bảo kết quả là một chuỗi được kết thúc bằng null.
- * * @param fd File descriptor của socket.
- * @param buffer Buffer để lưu dữ liệu nhận được.
- * @param buffer_len Kích thước của buffer.
- * @return Số byte đã nhận nếu thành công, -1 nếu có lỗi.
+ * @brief Nhận dữ liệu vào buffer. (Phiên bản Windows)
  */
-static ssize_t recv_into_buffer(int fd, char* buffer, size_t buffer_len) {
+static ssize_t recv_into_buffer(SOCKET fd, char* buffer, size_t buffer_len) {
     size_t total = 0;
-    // Vòng lặp nhận dữ liệu, chừa lại 1 byte cho ký tự null
     while (total + 1 < buffer_len) {
-        ssize_t received = recv(fd, buffer + total, buffer_len - 1 - total, 0);
+        // Thay đổi: recv() trả về 'int'
+        int received = recv(fd, buffer + total, (int)(buffer_len - 1 - total), 0);
         if (received < 0) {
-            if (errno == EINTR) { // Bị ngắt, thử lại
+            // Thay đổi: dùng WSAGetLastError() thay vì errno
+            if (WSAGetLastError() == WSAEINTR) {
                 continue;
             }
-            return -1; // Lỗi thực sự
+            return -1; // Lỗi
         }
-        if (received == 0) { // Phía bên kia đã đóng kết nối
+        if (received == 0) { // Kết nối đã đóng
             break;
         }
-        total += (size_t)received; // Cộng dồn số byte đã nhận
+        total += (size_t)received;
     }
-    buffer[total] = '\0'; // Thêm ký tự null để tạo thành chuỗi hợp lệ
+    buffer[total] = '\0';
     return (ssize_t)total;
 }
 
 /**
- * @brief Trích xuất tên file từ một đường dẫn đầy đủ.
- * * @param path Đường dẫn file.
- * @return Con trỏ tới phần tên file trong chuỗi đường dẫn.
+ * @brief Trích xuất tên file từ đường dẫn. (Phiên bản Windows)
+ * Hỗ trợ cả hai dấu '/' và '\'
  */
 static const char* basename_ptr(const char* path) {
-    const char* slash = strrchr(path, '/'); // Tìm dấu '/' cuối cùng
-    if (!slash) {
-        return path; // Không có '/', toàn bộ chuỗi là tên file
-    }
-    return slash + 1; // Trả về con trỏ ngay sau dấu '/'
+    const char* slash = strrchr(path, '/');
+    const char* backslash = strrchr(path, '\\');
+    
+    if (!slash && !backslash) return path;
+    if (slash && !backslash) return slash + 1;
+    if (!slash && backslash) return backslash + 1;
+
+    // Cả hai đều tồn tại, trả về cái cuối cùng
+    return (slash > backslash ? slash : backslash) + 1;
 }
 
 /**
- * @brief Khởi tạo một server TCP.
- * * Tạo, bind và lắng nghe trên một socket TCP.
- * * @param host Địa chỉ IP để bind (hoặc NULL cho tất cả).
- * @param port Cổng để lắng nghe.
- * @return File descriptor của socket server nếu thành công, -1 nếu thất bại.
+ * @brief Khởi tạo server TCP. (Phiên bản Windows)
  */
-int tcp_server_start(const char* host, int port) {
+SOCKET tcp_server_start(const char* host, int port) {
     if (port <= 0) {
-        return -1;
+        return INVALID_SOCKET;
     }
-    int fd = bind_socket(host, port, SOCK_STREAM); // Bind socket TCP
-    if (fd < 0) {
-        return -1;
+    SOCKET fd = bind_socket(host, port, SOCK_STREAM);
+    if (fd == INVALID_SOCKET) {
+        return INVALID_SOCKET;
     }
-    // Bắt đầu lắng nghe kết nối
     if (listen(fd, BACKLOG) != 0) {
-        close(fd);
-        return -1;
+        closesocket(fd);
+        return INVALID_SOCKET;
     }
     return fd;
 }
 
-int tcp_accept(int server_fd) {
-    if (server_fd < 0) {
-        return -1;
+/**
+ * @brief Chấp nhận kết nối TCP. (Phiên bản Windows)
+ */
+SOCKET tcp_accept(SOCKET server_fd) {
+    if (server_fd == INVALID_SOCKET) {
+        return INVALID_SOCKET;
     }
-    int client_fd = accept(server_fd, NULL, NULL);
-    if (client_fd < 0) {
-        return -1;
+    SOCKET client_fd = accept(server_fd, NULL, NULL);
+    if (client_fd == INVALID_SOCKET) {
+        return INVALID_SOCKET;
     }
     return client_fd;
 }
 
 /**
- * @brief Kết nối tới một server TCP.
- * * @param host Địa chỉ IP hoặc tên miền của server.
- * @param port Cổng của server.
- * @return File descriptor của socket client nếu thành công, -1 nếu thất bại.
+ * @brief Kết nối tới server TCP. (Phiên bản Windows)
  */
-int tcp_client_connect(const char* host, int port) {
+SOCKET tcp_client_connect(const char* host, int port) {
     if (!host || port <= 0) {
-        return -1;
+        return INVALID_SOCKET;
     }
-    return connect_socket(host, port, SOCK_STREAM); // Kết nối socket TCP
+    return connect_socket(host, port, SOCK_STREAM);
 }
 
 /**
- * @brief Gửi dữ liệu qua một kết nối TCP.
- * * @param fd File descriptor của socket.
- * @param buf Buffer chứa dữ liệu.
- * @param len Độ dài dữ liệu.
- * @return Số byte đã gửi nếu thành công, -1 nếu thất bại.
+ * @brief Gửi dữ liệu TCP. (Phiên bản Windows)
  */
-ssize_t tcp_send(int fd, const char* buf, size_t len) {
-    if (fd < 0 || !buf) {
+ssize_t tcp_send(SOCKET fd, const char* buf, size_t len) {
+    if (fd == INVALID_SOCKET || !buf) {
         return -1;
     }
-    if (send_all(fd, buf, len) != 0) { // Đảm bảo gửi hết
+    if (send_all(fd, buf, len) != 0) {
         return -1;
     }
+    // Trả về ssize_t (có thể là -1 nếu lỗi, hoặc len nếu thành công)
     return (ssize_t)len;
 }
 
 /**
- * @brief Nhận dữ liệu từ một kết nối TCP.
- * * @param fd File descriptor của socket.
- * @param buf Buffer để lưu dữ liệu.
- * @param len Kích thước tối đa của buffer.
- * @return Số byte đã nhận, 0 nếu kết nối đóng, -1 nếu có lỗi.
+ * @brief Nhận dữ liệu TCP. (Phiên bản Windows)
  */
-ssize_t tcp_recv(int fd, char* buf, size_t len) {
-    if (fd < 0 || !buf || len == 0) {
+ssize_t tcp_recv(SOCKET fd, char* buf, size_t len) {
+    if (fd == INVALID_SOCKET || !buf || len == 0) {
         return -1;
     }
     while (1) {
-        ssize_t received = recv(fd, buf, len, 0);
+        // Thay đổi: recv() trả về 'int'
+        int received = recv(fd, buf, (int)len, 0);
         if (received < 0) {
-            if (errno == EINTR) { // Bị ngắt, thử lại
+            if (WSAGetLastError() == WSAEINTR) {
                 continue;
             }
             return -1; // Lỗi
         }
-        return received; // Trả về số byte nhận được
+        return (ssize_t)received; // Trả về số byte nhận được (cast sang ssize_t)
     }
 }
 
 /**
- * @brief Đóng một kết nối TCP.
- * * @param fd File descriptor của socket.
- * @return 0 nếu thành công, -1 nếu thất bại.
+ * @brief Đóng kết nối TCP. (Phiên bản Windows)
  */
-int tcp_close(int fd) {
-    if (fd < 0) {
+int tcp_close(SOCKET fd) {
+    if (fd == INVALID_SOCKET) {
         return -1;
     }
-    return close(fd);
+    return closesocket(fd); // Dùng closesocket()
 }
 
 /**
- * @brief Khởi tạo một server UDP.
- * * @param host Địa chỉ IP để bind (hoặc NULL).
- * @param port Cổng để lắng nghe.
- * @return File descriptor của socket server nếu thành công, -1 nếu thất bại.
+ * @brief Khởi tạo server UDP. (Phiên bản Windows)
  */
-int udp_server_start(const char* host, int port) {
+SOCKET udp_server_start(const char* host, int port) {
     if (port <= 0) {
-        return -1;
+        return INVALID_SOCKET;
     }
-    int fd = bind_socket(host, port, SOCK_DGRAM); // Bind socket UDP
+    SOCKET fd = bind_socket(host, port, SOCK_DGRAM);
     return fd;
 }
 
 /**
- * @brief Tạo một socket UDP client và kết nối (thiết lập địa chỉ mặc định).
- * * @param host Địa chỉ IP hoặc tên miền của server.
- * @param port Cổng của server.
- * @return File descriptor của socket client nếu thành công, -1 nếu thất bại.
+ * @brief Tạo socket UDP client. (Phiên bản Windows)
  */
-int udp_client_connect(const char* host, int port) {
+SOCKET udp_client_connect(const char* host, int port) {
     if (!host || port <= 0) {
-        return -1;
+        return INVALID_SOCKET;
     }
-    return connect_socket(host, port, SOCK_DGRAM); // Kết nối socket UDP
+    return connect_socket(host, port, SOCK_DGRAM);
 }
 
 /**
- * @brief Gửi dữ liệu qua UDP.
- * * Nếu host và port được cung cấp, sử dụng `sendto`. Nếu không, sử dụng `send` (cho socket đã connect).
- * * @param fd File descriptor của socket.
- * @param buf Buffer dữ liệu.
- * @param len Độ dài dữ liệu.
- * @param host Địa chỉ IP đích (tùy chọn).
- * @param port Cổng đích (tùy chọn).
- * @return Số byte đã gửi nếu thành công, -1 nếu thất bại.
+ * @brief Gửi dữ liệu UDP. (Phiên bản Windows)
  */
-ssize_t udp_send(int fd, const char* buf, size_t len, const char* host, int port) {
-    if (fd < 0 || !buf) {
+ssize_t udp_send(SOCKET fd, const char* buf, size_t len, const char* host, int port) {
+    if (fd == INVALID_SOCKET || !buf) {
         return -1;
     }
-    if (host && port > 0) { // Nếu có địa chỉ đích cụ thể
+    if (host && port > 0) {
         struct addrinfo* res = NULL;
         if (get_addrinfo_for(host, port, SOCK_DGRAM, 0, &res) != 0) {
             return -1;
         }
-        ssize_t result = sendto(fd, buf, len, 0, res->ai_addr, res->ai_addrlen);
+        // Thay đổi: sendto() trả về 'int'
+        int result = sendto(fd, buf, (int)len, 0, res->ai_addr, (int)res->ai_addrlen);
         freeaddrinfo(res);
-        return result;
+        return (ssize_t)result;
     }
-    // Nếu không, socket phải đã được "connect"
-    return send(fd, buf, len, 0);
+    // Thay đổi: send() trả về 'int'
+    int result = send(fd, buf, (int)len, 0);
+    return (ssize_t)result;
 }
 
 /**
- * @brief Nhận dữ liệu qua UDP và lấy thông tin người gửi.
- * * @param fd File descriptor của socket.
- * @param buf Buffer để lưu dữ liệu.
- * @param maxlen Kích thước tối đa của buffer.
- * @param out_ip Buffer để lưu địa chỉ IP của người gửi (tùy chọn).
- * @param out_port Con trỏ để lưu cổng của người gửi (tùy chọn).
- * @return Số byte đã nhận nếu thành công, -1 nếu thất bại.
+ * @brief Nhận dữ liệu UDP. (Phiên bản Windows)
  */
-ssize_t udp_recv(int fd, char* buf, size_t maxlen, char* out_ip, int* out_port) {
-    if (fd < 0 || !buf || maxlen == 0) {
+ssize_t udp_recv(SOCKET fd, char* buf, size_t maxlen, char* out_ip, int* out_port) {
+    if (fd == INVALID_SOCKET || !buf || maxlen == 0) {
         return -1;
     }
-    struct sockaddr_storage addr; // Lưu trữ địa chỉ người gửi (IPv4/IPv6)
-    socklen_t addrlen = sizeof(addr);
-    ssize_t received = recvfrom(fd, buf, maxlen, 0, (struct sockaddr*)&addr, &addrlen);
+    struct sockaddr_storage addr; 
+    int addrlen = sizeof(addr); // Dùng int cho Windows
+    
+    // Thay đổi: recvfrom() trả về 'int'
+    int received = recvfrom(fd, buf, (int)maxlen, 0, (struct sockaddr*)&addr, &addrlen);
     if (received < 0) {
         return -1;
     }
 
-    // Trích xuất IP nếu được yêu cầu
     if (out_ip) {
         void* src = NULL;
-        if (addr.ss_family == AF_INET) { // IPv4
+        if (addr.ss_family == AF_INET) {
             src = &((struct sockaddr_in*)&addr)->sin_addr;
-        } else if (addr.ss_family == AF_INET6) { // IPv6
+        } else if (addr.ss_family == AF_INET6) {
             src = &((struct sockaddr_in6*)&addr)->sin6_addr;
         }
         if (src) {
-            // Chuyển đổi địa chỉ từ dạng nhị phân sang chuỗi
+            // inet_ntop có sẵn trong ws2tcpip.h
             inet_ntop(addr.ss_family, src, out_ip, INET6_ADDRSTRLEN);
         }
     }
-    // Trích xuất port nếu được yêu cầu
     if (out_port) {
         if (addr.ss_family == AF_INET) {
             *out_port = ntohs(((struct sockaddr_in*)&addr)->sin_port);
@@ -389,40 +345,25 @@ ssize_t udp_recv(int fd, char* buf, size_t maxlen, char* out_ip, int* out_port) 
         }
     }
 
-    return received;
+    return (ssize_t)received;
 }
 
 /**
- * @brief Đóng một socket UDP.
- * * @param fd File descriptor của socket.
- * @return 0 nếu thành công, -1 nếu thất bại.
+ * @brief Đóng socket UDP. (Phiên bản Windows)
  */
-int udp_close(int fd) {
-    if (fd < 0) {
+int udp_close(SOCKET fd) {
+    if (fd == INVALID_SOCKET) {
         return -1;
     }
-    return close(fd);
+    return closesocket(fd);
 }
 
 /**
- * @brief Thực hiện một yêu cầu HTTP chung.
- * * Đây là hàm cốt lõi để tạo và gửi các yêu cầu GET, POST, PUT, DELETE.
- * * @param host Tên miền hoặc IP của server.
- * @param port Cổng của server.
- * @param method Phương thức HTTP (ví dụ: "GET", "POST").
- * @param path Đường dẫn tài nguyên (ví dụ: "/index.html").
- * @param content_type Loại nội dung của body (ví dụ: "application/json").
- * @param body Nội dung của yêu cầu (request body).
- * @param body_len Độ dài của body.
- * @param extra_headers Các header bổ sung, mỗi header kết thúc bằng "\r\n".
- * @param response Buffer để lưu trữ phản hồi từ server.
- * @param response_len Kích thước của buffer phản hồi.
- * @return 0 nếu thành công, -1 nếu thất bại.
+ * @brief Thực hiện yêu cầu HTTP chung. (Phiên bản Windows)
  */
 int http_request(const char* host, int port, const char* method, const char* path,
                  const char* content_type, const char* body, size_t body_len,
                  const char* extra_headers, char* response, size_t response_len) {
-    // Kiểm tra các tham số đầu vào cơ bản
     if (!host || !method || !path || !response || response_len == 0) {
         return -1;
     }
@@ -431,16 +372,15 @@ int http_request(const char* host, int port, const char* method, const char* pat
     }
 
     if (port <= 0) {
-        port = DEFAULT_HTTP_PORT; // Sử dụng cổng mặc định nếu không được chỉ định
+        port = DEFAULT_HTTP_PORT;
     }
 
-    // Kết nối tới server
-    int fd = connect_socket(host, port, SOCK_STREAM);
-    if (fd < 0) {
+    // Thay đổi: dùng SOCKET và kiểm tra INVALID_SOCKET
+    SOCKET fd = connect_socket(host, port, SOCK_STREAM);
+    if (fd == INVALID_SOCKET) {
         return -1;
     }
 
-    // Tạo dòng Host header, bao gồm cả port nếu không phải là 80
     char host_line[512];
     if (port == 80 || port == 0) {
         snprintf(host_line, sizeof(host_line), "%s", host);
@@ -448,106 +388,93 @@ int http_request(const char* host, int port, const char* method, const char* pat
         snprintf(host_line, sizeof(host_line), "%s:%d", host, port);
     }
 
-    char header[4096]; // Buffer để xây dựng toàn bộ HTTP header
+    char header[4096]; 
     size_t offset = 0;
 
-    // Xây dựng dòng yêu cầu đầu tiên: "METHOD /path HTTP/1.1\r\n"
+    // snprintf là chuẩn C99, MSVC (Visual Studio) hỗ trợ
     int written = snprintf(header + offset, sizeof(header) - offset,
                            "%s %s HTTP/1.1\r\n", method, path);
     if (written < 0 || (size_t)written >= sizeof(header) - offset) {
-        close(fd); return -1;
+        closesocket(fd); return -1;
     }
     offset += (size_t)written;
 
-    // Thêm Host header
     written = snprintf(header + offset, sizeof(header) - offset,
                        "Host: %s\r\n", host_line);
     if (written < 0 || (size_t)written >= sizeof(header) - offset) {
-        close(fd); return -1;
+        closesocket(fd); return -1;
     }
     offset += (size_t)written;
 
-    // Thêm Connection header, báo cho server đóng kết nối sau khi phản hồi
     written = snprintf(header + offset, sizeof(header) - offset,
                        "Connection: close\r\n");
     if (written < 0 || (size_t)written >= sizeof(header) - offset) {
-        close(fd); return -1;
+        closesocket(fd); return -1;
     }
     offset += (size_t)written;
 
-    // Thêm Content-Type header nếu có
     if (content_type && body_len > 0) {
         written = snprintf(header + offset, sizeof(header) - offset,
                            "Content-Type: %s\r\n", content_type);
         if (written < 0 || (size_t)written >= sizeof(header) - offset) {
-            close(fd); return -1;
+            closesocket(fd); return -1;
         }
         offset += (size_t)written;
     }
 
-    // Thêm Content-Length header nếu có body
     if (body_len > 0) {
         written = snprintf(header + offset, sizeof(header) - offset,
                            "Content-Length: %zu\r\n", body_len);
         if (written < 0 || (size_t)written >= sizeof(header) - offset) {
-            close(fd); return -1;
+            closesocket(fd); return -1;
         }
         offset += (size_t)written;
     }
 
-    // Thêm các header tùy chỉnh khác
     if (extra_headers && extra_headers[0] != '\0') {
         size_t eh_len = strlen(extra_headers);
         if (eh_len >= sizeof(header) - offset) {
-            close(fd); return -1;
+            closesocket(fd); return -1;
         }
         memcpy(header + offset, extra_headers, eh_len);
         offset += eh_len;
-        // Đảm bảo extra_headers kết thúc bằng \r\n
         if (eh_len < 2 || strncmp(extra_headers + eh_len - 2, "\r\n", 2) != 0) {
             if (offset + 2 >= sizeof(header)) {
-                close(fd); return -1;
+                closesocket(fd); return -1;
             }
             header[offset++] = '\r';
             header[offset++] = '\n';
         }
     }
 
-    // Kết thúc phần header bằng một dòng trống
     if (offset + 2 >= sizeof(header)) {
-        close(fd); return -1;
+        closesocket(fd); return -1;
     }
     header[offset++] = '\r';
     header[offset++] = '\n';
 
-    // Gửi toàn bộ header
     if (send_all(fd, header, offset) != 0) {
-        close(fd); return -1;
+        closesocket(fd); return -1;
     }
 
-    // Gửi body nếu có
     if (body_len > 0 && send_all(fd, body, body_len) != 0) {
-        close(fd); return -1;
+        closesocket(fd); return -1;
     }
 
-    // Nhận phản hồi từ server
     ssize_t received = recv_into_buffer(fd, response, response_len);
-    close(fd); // Đóng kết nối
+    closesocket(fd); 
 
     return (received < 0) ? -1 : 0;
 }
 
-/**
- * @brief Thực hiện yêu cầu HTTP GET.
- */
+// Các hàm http_get, http_post, http_put, http_delete
+// không thay đổi vì chúng chỉ gọi http_request
+
 int http_get(const char* host, int port, const char* path,
              const char* extra_headers, char* response, size_t response_len) {
     return http_request(host, port, "GET", path, NULL, NULL, 0, extra_headers, response, response_len);
 }
 
-/**
- * @brief Thực hiện yêu cầu HTTP POST.
- */
 int http_post(const char* host, int port, const char* path,
               const char* content_type, const char* body, size_t body_len,
               const char* extra_headers, char* response, size_t response_len) {
@@ -555,9 +482,6 @@ int http_post(const char* host, int port, const char* path,
                         extra_headers, response, response_len);
 }
 
-/**
- * @brief Thực hiện yêu cầu HTTP PUT.
- */
 int http_put(const char* host, int port, const char* path,
              const char* content_type, const char* body, size_t body_len,
              const char* extra_headers, char* response, size_t response_len) {
@@ -565,9 +489,6 @@ int http_put(const char* host, int port, const char* path,
                         extra_headers, response, response_len);
 }
 
-/**
- * @brief Thực hiện yêu cầu HTTP DELETE.
- */
 int http_delete(const char* host, int port, const char* path,
                 const char* extra_headers, char* response, size_t response_len) {
     return http_request(host, port, "DELETE", path, NULL, NULL, 0,
@@ -575,17 +496,7 @@ int http_delete(const char* host, int port, const char* path,
 }
 
 /**
- * @brief Gửi một file lên server bằng HTTP POST (multipart/form-data).
- * * @param host Tên miền hoặc IP của server.
- * @param port Cổng của server.
- * @param path Đường dẫn API trên server.
- * @param filepath Đường dẫn tới file cần upload.
- * @param field_name Tên của trường form-data chứa file (mặc định là "file").
- * @param file_name Tên file sẽ được gửi đi (mặc định là tên file gốc).
- * @param extra_headers Các header bổ sung.
- * @param response Buffer để lưu phản hồi.
- * @param response_len Kích thước buffer phản hồi.
- * @return 0 nếu thành công, -1 nếu thất bại.
+ * @brief Gửi file qua HTTP POST. (Phiên bản Windows)
  */
 int http_post_file(const char* host, int port, const char* path, const char* filepath,
                    const char* field_name, const char* file_name,
@@ -595,28 +506,27 @@ int http_post_file(const char* host, int port, const char* path, const char* fil
     }
 
     if (!field_name || field_name[0] == '\0') {
-        field_name = "file"; // Tên trường mặc định
+        field_name = "file";
     }
 
-    // Lấy tên file để upload, ưu tiên file_name, nếu không thì lấy từ filepath
     const char* upload_name = file_name && file_name[0] != '\0' ? file_name : basename_ptr(filepath);
 
-    // Lấy thông tin file (kích thước)
-    struct stat st;
-    if (stat(filepath, &st) != 0) {
-        return -1; // Không thể lấy thông tin file
+    // Thay đổi: sử dụng struct _stat và hàm _stat
+    struct _stat st;
+    if (_stat(filepath, &st) != 0) {
+        return -1; 
     }
-    if (!S_ISREG(st.st_mode)) {
-        return -1; // Chỉ hỗ trợ file thông thường
+    // Thay đổi: sử dụng cờ _S_IFREG
+    if (!(st.st_mode & _S_IFREG)) {
+        return -1; 
     }
 
     size_t file_size = (size_t)st.st_size;
-    FILE* fp = fopen(filepath, "rb"); // Mở file ở chế độ đọc nhị phân
+    FILE* fp = fopen(filepath, "rb"); 
     if (!fp) {
         return -1;
     }
 
-    // Xây dựng phần đầu của multipart body
     char preamble[1024];
     int preamble_len = snprintf(preamble, sizeof(preamble),
                                 "--%s\r\n"
@@ -627,7 +537,6 @@ int http_post_file(const char* host, int port, const char* path, const char* fil
         fclose(fp); return -1;
     }
 
-    // Xây dựng phần cuối của multipart body
     char closing[128];
     int closing_len = snprintf(closing, sizeof(closing),
                                "\r\n--%s--\r\n", MULTIPART_BOUNDARY);
@@ -635,38 +544,32 @@ int http_post_file(const char* host, int port, const char* path, const char* fil
         fclose(fp); return -1;
     }
 
-    // Cấp phát bộ nhớ cho toàn bộ body (phần đầu + nội dung file + phần cuối)
     size_t total_len = (size_t)preamble_len + file_size + (size_t)closing_len;
     char* body = (char*)malloc(total_len);
     if (!body) {
         fclose(fp); return -1;
     }
 
-    // Sao chép phần đầu vào body
     memcpy(body, preamble, (size_t)preamble_len);
     size_t offset = (size_t)preamble_len;
 
-    // Đọc toàn bộ nội dung file vào body
     size_t read_total = fread(body + offset, 1, file_size, fp);
-    fclose(fp); // Đóng file sau khi đọc xong
+    fclose(fp);
 
-    if (read_total != file_size) { // Kiểm tra xem có đọc đủ file không
+    if (read_total != file_size) { 
         free(body);
         return -1;
     }
 
-    // Sao chép phần cuối vào body
     memcpy(body + offset + read_total, closing, (size_t)closing_len);
 
-    // Tạo Content-Type header cho yêu cầu multipart
     char content_type[128];
     snprintf(content_type, sizeof(content_type),
              "multipart/form-data; boundary=%s",
              MULTIPART_BOUNDARY);
 
-    // Gọi hàm http_request để gửi đi
     int rc = http_request(host, port, "POST", path, content_type,
                           body, total_len, extra_headers, response, response_len);
-    free(body); // Giải phóng bộ nhớ đã cấp phát
+    free(body);
     return rc;
 }

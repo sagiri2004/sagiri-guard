@@ -2,22 +2,53 @@
 #define NETWORK_H
 
 #include <stddef.h>
-#include <sys/types.h>
+
+// --- Thay đổi cho Windows ---
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#if defined(_MSC_VER) && !defined(_SSIZE_T_DEFINED)
+#ifdef _WIN64
+typedef __int64 ssize_t;
+#else
+typedef int ssize_t;
+#endif
+#define _SSIZE_T_DEFINED
+#endif
+// --- Kết thúc thay đổi cho Windows ---
+
+// --- Thêm hàm khởi tạo và dọn dẹp cho Winsock ---
+/**
+ * @brief Khởi tạo thư viện Winsock.
+ * Phải được gọi một lần khi bắt đầu chương trình.
+ * @return 0 nếu thành công, -1 nếu thất bại.
+ */
+int network_init(void);
+
+/**
+ * @brief Dọn dẹp thư viện Winsock.
+ * Phải được gọi một lần khi kết thúc chương trình.
+ */
+void network_cleanup(void);
+// --- Kết thúc thêm hàm ---
+
 
 // TCP
-int tcp_server_start(const char* host, int port);
-int tcp_client_connect(const char* host, int port);
-int tcp_accept(int server_fd);
-ssize_t tcp_send(int fd, const char* buf, size_t len);
-ssize_t tcp_recv(int fd, char* buf, size_t len);
-int tcp_close(int fd);
+// Thay đổi: kiểu trả về và tham số file descriptor (fd) là SOCKET
+SOCKET tcp_server_start(const char* host, int port);
+SOCKET tcp_client_connect(const char* host, int port);
+SOCKET tcp_accept(SOCKET server_fd);
+ssize_t tcp_send(SOCKET fd, const char* buf, size_t len);
+ssize_t tcp_recv(SOCKET fd, char* buf, size_t len);
+int tcp_close(SOCKET fd);
 
 // UDP
-int udp_server_start(const char* host, int port);
-int udp_client_connect(const char* host, int port);
-ssize_t udp_send(int fd, const char* buf, size_t len, const char* host, int port);
-ssize_t udp_recv(int fd, char* buf, size_t maxlen, char* out_ip, int* out_port);
-int udp_close(int fd);
+// Thay đổi: kiểu trả về và tham số file descriptor (fd) là SOCKET
+SOCKET udp_server_start(const char* host, int port);
+SOCKET udp_client_connect(const char* host, int port);
+ssize_t udp_send(SOCKET fd, const char* buf, size_t len, const char* host, int port);
+ssize_t udp_recv(SOCKET fd, char* buf, size_t maxlen, char* out_ip, int* out_port);
+int udp_close(SOCKET fd);
 
 // HTTP Helpers (simple implementation over TCP sockets)
 int http_request(const char* host, int port, const char* method, const char* path,
@@ -38,4 +69,3 @@ int http_post_file(const char* host, int port, const char* path, const char* fil
                    const char* extra_headers, char* response, size_t response_len);
 
 #endif
-
