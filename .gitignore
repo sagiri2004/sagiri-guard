@@ -5,3 +5,4 @@
 /network/libnetwork.so
 /network/network.o
 /network/libnetwork.a
+/agent.log

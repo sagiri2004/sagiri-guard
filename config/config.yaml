@@ -1,0 +1,27 @@
+backend:
+  http:
+    host: 127.0.0.1
+    port: 9400
+  tcp:
+    host: 127.0.0.1
+    port: 9200
+  db:
+    host: 127.0.0.1
+    port: 3306
+    user: root
+    pass: root
+    name: sagiri_guard
+  jwt:
+    secret: dev-secret
+    issuer: sagiri-guard
+    exp_min: 60
+
+agent:
+  backend:
+    host: 127.0.0.1
+    http: 9400
+    tcp: 9200
+  token_path: root
+  log_path: agent.log
+  osquery_path: C:\\Program Files\\osquery\\osqueryi.exe
+
