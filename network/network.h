@@ -42,13 +42,7 @@ ssize_t tcp_send(SOCKET fd, const char* buf, size_t len);
 ssize_t tcp_recv(SOCKET fd, char* buf, size_t len);
 int tcp_close(SOCKET fd);
 
-// UDP
-// Thay đổi: kiểu trả về và tham số file descriptor (fd) là SOCKET
-SOCKET udp_server_start(const char* host, int port);
-SOCKET udp_client_connect(const char* host, int port);
-ssize_t udp_send(SOCKET fd, const char* buf, size_t len, const char* host, int port);
-ssize_t udp_recv(SOCKET fd, char* buf, size_t maxlen, char* out_ip, int* out_port);
-int udp_close(SOCKET fd);
+// UDP removed (unused)
 
 // HTTP Helpers (simple implementation over TCP sockets)
 int http_request(const char* host, int port, const char* method, const char* path,
@@ -64,8 +58,6 @@ int http_put(const char* host, int port, const char* path,
              const char* extra_headers, char* response, size_t response_len);
 int http_delete(const char* host, int port, const char* path,
                 const char* extra_headers, char* response, size_t response_len);
-int http_post_file(const char* host, int port, const char* path, const char* filepath,
-                   const char* field_name, const char* file_name,
-                   const char* extra_headers, char* response, size_t response_len);
+// http_post_file removed (unused)
 
 #endif

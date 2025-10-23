@@ -4,23 +4,28 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 var L zerolog.Logger
 
 func Init(path string) error {
-	var w io.Writer = os.Stdout
+	// console writer setup (human-friendly)
+	cw := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "2006-01-02 15:04:05"}
+
+	var writer io.Writer = cw
 	if path != "" {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return err
 		}
-		w = file
+		fw := zerolog.ConsoleWriter{Out: file, NoColor: true, TimeFormat: "2006-01-02 15:04:05"}
+		writer = zerolog.MultiLevelWriter(cw, fw)
 	}
-	L = log.Output(zerolog.ConsoleWriter{Out: w})
+	zerolog.TimeFieldFormat = time.DateTime
+	L = zerolog.New(writer).With().Timestamp().Logger()
 	return nil
 }
 

@@ -11,7 +11,7 @@ type Routes struct {
 	Admin  http.Handler
 }
 
-func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthController, adminCtrl *controllers.AdminController, deviceCtrl *controllers.DeviceController, mw *middleware.Auth) http.Handler {
+func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthController, adminCtrl *controllers.AdminController, deviceCtrl *controllers.DeviceController, cmdCtrl *controllers.CommandController, mw *middleware.Auth) http.Handler {
 	mux := http.NewServeMux()
 	// public
 	mux.HandleFunc("/ping", httpCtrl.Ping)
@@ -25,6 +25,10 @@ func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthC
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("/admin/users", adminCtrl.CreateUser)
 	mux.Handle("/admin/users", mw.RequireAdmin(adminMux))
+
+	// command endpoints (admin only)
+	mux.Handle("/admin/command", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Post)))
+	mux.Handle("/admin/online", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Online)))
 
 	// devices
 	mux.Handle("/devices", mw.RequireAuth(http.HandlerFunc(deviceCtrl.GetByUUID)))

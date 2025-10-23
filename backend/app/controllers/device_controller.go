@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"net/http"
+	"sagiri-guard/backend/app/dto"
 	"sagiri-guard/backend/app/middleware"
 	"sagiri-guard/backend/app/models"
 	"sagiri-guard/backend/app/services"
@@ -45,7 +46,7 @@ func (c *DeviceController) RegisterOrUpdate(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	var req DeviceRequest
+	var req dto.DeviceRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.UUID == "" {
 		w.WriteHeader(http.StatusBadRequest)

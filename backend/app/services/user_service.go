@@ -24,6 +24,21 @@ func (s *UserService) EnsureAdmin(username, password string) error {
 	return s.users.Create(&models.User{Username: username, PasswordHash: string(hash), Role: "admin"})
 }
 
+func (s *UserService) EnsureUser(username, password, role string) error {
+	count, err := s.users.CountByUsername(username)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	if role == "" {
+		role = "user"
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return s.users.Create(&models.User{Username: username, PasswordHash: string(hash), Role: role})
+}
+
 func (s *UserService) CreateUser(username, password, role string) error {
 	if role == "" {
 		role = "user"

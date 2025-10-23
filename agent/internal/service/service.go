@@ -17,14 +17,13 @@ func Login(username, password string) (string, error) {
 
 func BootstrapDevice(token string) (string, error) {
 	cfg := config.Get()
-	baseURL := logger.Sprintf("http://%s:%d", cfg.BackendHost, cfg.BackendHTTP)
 	si, osv, err := osq.Collect()
 	if err != nil {
 		return "", err
 	}
 	dev := device.Info{UUID: si.UUID, Name: si.Hardware, OSName: osv.Name, OSVersion: osv.Version, Hostname: si.Hostname, Arch: si.CPUBrand}
-	if _, code, _ := device.Get(baseURL, token, dev.UUID); code == 404 {
-		if _, _, err := device.Register(baseURL, token, dev); err != nil {
+	if _, code, _ := device.Get(cfg.BackendHost, cfg.BackendHTTP, token, dev.UUID); code == 404 {
+		if _, _, err := device.Register(cfg.BackendHost, cfg.BackendHTTP, token, dev); err != nil {
 			return "", err
 		}
 	}

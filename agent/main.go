@@ -8,6 +8,8 @@ import (
 	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/privilege"
 	"sagiri-guard/agent/internal/service"
+	"sagiri-guard/agent/internal/socket"
+	"sagiri-guard/backend/global"
 	"sagiri-guard/network"
 	"time"
 )
@@ -83,31 +85,18 @@ func main() {
 	select {}
 }
 
-func runPingLoop(client *network.TCPClient, host string, port int) error {
-	buf := make([]byte, 1024)
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	count := 0
-
-	for range ticker.C {
-		count++
-		msg := fmt.Sprintf("Agent ping #%d\n", count)
-
-		// Gửi ping với timeout
-		if _, err := client.Write([]byte(msg)); err != nil {
-			return fmt.Errorf("gửi ping thất bại: %w", err)
-		}
-
-		// Đọc phản hồi với timeout
+func runReadLoop(client *network.TCPClient) error {
+	buf := make([]byte, 4096)
+	for {
 		n, err := client.Read(buf)
+		global.Logger.Info().Int("n", n).Err(err).Msg("Read from client")
 		if err != nil {
-			return fmt.Errorf("đọc phản hồi từ backend thất bại: %w", err)
+			return err
 		}
-
-		fmt.Printf("Agent nhận phản hồi backend: %s", string(buf[:n]))
+		if n > 0 {
+			socket.HandleMessage(buf[:n])
+		}
 	}
-
-	return nil
 }
 
 func runAgentClientWithConfig(host string, port int, headers map[string]string, maxRetries int, baseDelay time.Duration) {
@@ -155,8 +144,8 @@ func runAgentClientWithConfig(host string, port int, headers map[string]string, 
 			continue
 		}
 
-		// Ping loop với reconnection logic
-		if err := runPingLoop(client, host, port); err != nil {
+		// Read loop until disconnect
+		if err := runReadLoop(client); err != nil {
 			fmt.Printf("Agent ping loop thất bại: %v. Sẽ thử kết nối lại...\n", err)
 			client.Close()
 			time.Sleep(2 * time.Second) // Ngắn delay trước khi retry

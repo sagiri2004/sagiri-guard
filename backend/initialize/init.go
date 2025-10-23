@@ -10,6 +10,7 @@ import (
 	"sagiri-guard/backend/app/models"
 	"sagiri-guard/backend/app/repo"
 	"sagiri-guard/backend/app/services"
+	"sagiri-guard/backend/app/socket"
 	"sagiri-guard/backend/config"
 	"sagiri-guard/backend/global"
 	"sagiri-guard/backend/router"
@@ -58,18 +59,23 @@ func Build(configPath string) (*App, error) {
 	if err := userSvc.EnsureAdmin("admin", "admin123"); err != nil {
 		// non-critical
 	}
+	if err := userSvc.EnsureUser("user", "user123", "user"); err != nil {
+		// non-critical
+	}
 
 	// Controllers
 	httpCtrl := controllers.NewHTTPController()
 	signer := &jwtutil.Signer{Secret: []byte(cfg.JWT.Secret), Issuer: cfg.JWT.Issuer, ExpMin: cfg.JWT.ExpMin}
 	authCtrl := controllers.NewAuthController(userSvc, signer)
-	socketCtrl := controllers.NewSocketController()
+	hub := socket.NewHub()
+	socketCtrl := controllers.NewSocketController(hub)
 	mw := &middleware.Auth{Signer: signer}
 	adminCtrl := controllers.NewAdminController(userSvc)
 	deviceCtrl := controllers.NewDeviceController(deviceSvc)
 
 	// Router
-	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, mw)
+	cmdCtrl := controllers.NewCommandController(hub)
+	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, mw)
 	// Wrap with logging middleware
 	h = middleware.Logging(h)
 

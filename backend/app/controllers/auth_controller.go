@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/json"
 	"net/http"
+	"sagiri-guard/backend/app/dto"
 	jwtutil "sagiri-guard/backend/app/jwt"
 	"sagiri-guard/backend/app/services"
 )
@@ -16,13 +17,8 @@ func NewAuthController(users *services.UserService, signer *jwtutil.Signer) *Aut
 	return &AuthController{Users: users, Signer: signer}
 }
 
-type loginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
 func (c *AuthController) Login(w http.ResponseWriter, r *http.Request) {
-	var req loginRequest
+	var req dto.LoginRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Username == "" || req.Password == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -42,5 +38,5 @@ func (c *AuthController) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"access_token": token})
+	_ = json.NewEncoder(w).Encode(dto.TokenResponse{AccessToken: token})
 }

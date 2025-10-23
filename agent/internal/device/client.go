@@ -1,11 +1,9 @@
 package device
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"sagiri-guard/network"
 )
 
 type Info struct {
@@ -17,39 +15,27 @@ type Info struct {
 	Arch      string `json:"arch"`
 }
 
-func Get(baseURL, token, uuid string) (*Info, int, error) {
-	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/devices?uuid=%s", baseURL, uuid), nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+func Get(host string, port int, token, uuid string) (*Info, int, error) {
+	resp, err := network.HTTPGetWithHeaders(host, port, "/devices?uuid="+uuid, map[string]string{"Authorization": "Bearer " + token})
 	if err != nil {
 		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, nil
 	}
 	var d Info
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		return nil, resp.StatusCode, err
+	if err := json.Unmarshal([]byte(resp), &d); err != nil {
+		return nil, 0, err
 	}
-	return &d, resp.StatusCode, nil
+	return &d, 200, nil
 }
 
-func Register(baseURL, token string, d Info) (*Info, int, error) {
+func Register(host string, port int, token string, d Info) (*Info, int, error) {
 	b, _ := json.Marshal(d)
-	req, _ := http.NewRequest("POST", fmt.Sprintf("%s/devices/register", baseURL), bytes.NewReader(b))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := network.HTTPPostWithHeaders(host, port, "/devices/register", "application/json", b, map[string]string{"Authorization": "Bearer " + token})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, resp.StatusCode, fmt.Errorf("register failed: %s", string(data))
-	}
 	var out Info
-	_ = json.Unmarshal(data, &out)
-	return &out, resp.StatusCode, nil
+	if err := json.Unmarshal([]byte(resp), &out); err != nil {
+		return nil, 0, fmt.Errorf("register failed: %v | raw=%s", err, resp)
+	}
+	return &out, 200, nil
 }

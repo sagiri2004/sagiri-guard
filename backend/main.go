@@ -26,7 +26,7 @@ func main() {
 		return
 	}
 
-	if err := server.StartHTTPServer(app.Cfg.HTTP.Host, app.Cfg.HTTP.Port, app.Router); err != nil {
+	if err := server.StartHTTPServerC(app.Cfg.HTTP.Host, app.Cfg.HTTP.Port, app.Router); err != nil {
 		fmt.Println("Không thể khởi động HTTP server:", err)
 		return
 	}

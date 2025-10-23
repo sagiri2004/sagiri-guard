@@ -1,15 +1,14 @@
 package auth
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/logger"
+	"sagiri-guard/network"
 )
 
 type Credentials struct {
@@ -25,19 +24,13 @@ type TokenResponse struct {
 func Login(host string, port int, username, password string) (string, error) {
 	creds := Credentials{Username: username, Password: password}
 	body, _ := json.Marshal(creds)
-	url := fmt.Sprintf("http://%s:%d/login", host, port)
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	// Use cgo-backed HTTP
+	resp, err := network.HTTPPost(host, port, "/login", "application/json", body)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("login failed: %s", resp.Status)
-	}
 	var tr TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil || tr.AccessToken == "" {
+	if err := json.Unmarshal([]byte(resp), &tr); err != nil || tr.AccessToken == "" {
 		return "", errors.New("invalid login response")
 	}
 	if err := saveToken(tr.AccessToken); err != nil {
