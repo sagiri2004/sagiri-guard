@@ -24,6 +24,14 @@ type TCP struct {
 	Port int
 }
 
+type Onedrive struct {
+	RefreshToken string
+	ClientID     string
+	ClientSecret string
+	RootFolderID string
+	DriveType    string
+	DriveID      string
+}
 type Config struct {
 	HTTP HTTP
 	TCP  TCP
@@ -33,9 +41,10 @@ type Config struct {
 		Issuer string
 		ExpMin int
 	}
+	Onedrive Onedrive
 }
 
-func Load(path string) (Config, error) {
+func Load(path string) (*Config, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
 	v.SetConfigType("yaml")
@@ -50,14 +59,28 @@ func Load(path string) (Config, error) {
 	v.SetDefault("backend.db.user", "root")
 	v.SetDefault("backend.db.pass", "")
 	v.SetDefault("backend.db.name", "sagiri_guard")
-
+	v.SetDefault("backend.onedrive.refresh_token", "")
+	v.SetDefault("backend.onedrive.client_id", "")
+	v.SetDefault("backend.onedrive.client_secret", "")
+	v.SetDefault("backend.onedrive.root_folder_id", "")
+	v.SetDefault("backend.onedrive.drive_type", "personal")
+	v.SetDefault("backend.onedrive.drive_id", "")
 	if err := v.ReadInConfig(); err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("read config: %w", err)
 	}
-	cfg := Config{
+
+	cfg := &Config{
 		HTTP: HTTP{Host: v.GetString("backend.http.host"), Port: v.GetInt("backend.http.port")},
 		TCP:  TCP{Host: v.GetString("backend.tcp.host"), Port: v.GetInt("backend.tcp.port")},
 		DB:   DB{Host: v.GetString("backend.db.host"), Port: v.GetInt("backend.db.port"), User: v.GetString("backend.db.user"), Pass: v.GetString("backend.db.pass"), Name: v.GetString("backend.db.name")},
+		Onedrive: Onedrive{
+			RefreshToken: v.GetString("backend.onedrive.refresh_token"),
+			ClientID:     v.GetString("backend.onedrive.client_id"),
+			ClientSecret: v.GetString("backend.onedrive.client_secret"),
+			RootFolderID: v.GetString("backend.onedrive.root_folder_id"),
+			DriveType:    v.GetString("backend.onedrive.drive_type"),
+			DriveID:      v.GetString("backend.onedrive.drive_id"),
+		},
 	}
 	cfg.JWT.Secret = v.GetString("backend.jwt.secret")
 	if cfg.JWT.Secret == "" {

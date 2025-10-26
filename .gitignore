@@ -6,3 +6,6 @@
 /network/network.o
 /network/libnetwork.a
 /agent.log
+/agent.db
+/root
+/config/config.yaml

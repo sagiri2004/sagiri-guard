@@ -1,0 +1,52 @@
+# Đây là tệp cấu hình ví dụ.
+# Đổi tên tệp này thành 'config.yml' (hoặc 'config.yaml')
+# và điền các giá trị bí mật và đường dẫn dành riêng cho môi trường của bạn.
+# KHÔNG BAO GIỜ commit tệp config.yml chứa các giá trị bí mật vào git.
+
+backend:
+  http:
+    host: 127.0.0.1 # Địa chỉ IP backend lắng nghe (localhost là mặc định)
+    port: 9400
+  tcp:
+    host: 127.0.0.1
+    port: 9200
+  db:
+    host: 127.0.0.1       # Địa chỉ DB server
+    port: 3306            # Cổng DB server
+    user: "YOUR_DB_USER"  # Tên người dùng DB
+    pass: "YOUR_DB_PASSWORD" # Mật khẩu DB
+    name: "sagiri_guard"  # Tên database
+  jwt:
+    secret: "YOUR_VERY_STRONG_JWT_SECRET" # Một chuỗi bí mật dài và ngẫu nhiên
+    issuer: "sagiri-guard"
+    exp_min: 60
+  onedrive:
+    # Các giá trị này lấy từ Azure App Registration của bạn
+    refresh_token: "YOUR_ONEDRIVE_REFRESH_TOKEN"
+    client_id: "YOUR_ONEDRIVE_CLIENT_ID"
+    client_secret: "YOUR_ONEDRIVE_CLIENT_SECRET"
+    root_folder_id: "YOUR_ONEDRIVE_ROOT_FOLDER_ID"
+    drive_type: "personal" # (hoặc 'business')
+    drive_id: "YOUR_ONEDRIVE_DRIVE_ID"
+
+agent:
+  backend:
+    host: 127.0.0.1 # Địa chỉ IP của backend mà agent sẽ kết nối tới
+    http: 9400       # Cổng HTTP của backend
+    tcp: 9200        # Cổng TCP của backend
+  token_path: "agent.token" # Nơi lưu trữ token xác thực của agent
+  log_path: "agent.log"   # Đường dẫn tệp log
+  
+  # Đường dẫn đến file thực thi osquery (osqueryi.exe trên Windows, osqueryi trên Linux/macOS)
+  # Bỏ comment dòng phù hợp với HĐH của bạn và chỉnh lại đường dẫn cho đúng
+  # osquery_path: "C:\\Program Files\\osquery\\osqueryi.exe" # Ví dụ cho Windows
+  osquery_path: "/usr/bin/osqueryi" # Ví dụ cho Linux
+  # osquery_path: "/usr/local/bin/osqueryi" # Ví dụ cho macOS (Homebrew)
+
+  # Danh sách các thư mục cần giám sát
+  monitor_paths:
+    - "C:\\path\\to\\your\\folder1" # Ví dụ cho Windows
+    - "/home/user/your_folder2"    # Ví dụ cho Linux/macOS
+    # - "D:\\another\\monitored\\path"
+
+  db_path: "agent.db" # Nơi lưu trữ DB cục bộ của agent (thường là sqlite)

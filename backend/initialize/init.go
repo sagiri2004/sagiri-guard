@@ -47,15 +47,17 @@ func Build(configPath string) (*App, error) {
 	global.Mdb = gdb
 
 	// Migrate
-	if err := gdb.AutoMigrate(&models.User{}, &models.Device{}); err != nil {
+	if err := gdb.AutoMigrate(&models.User{}, &models.Device{}, &models.AgentLog{}); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
 	// Services
 	userRepo := repo.NewUserRepository(gdb)
 	deviceRepo := repo.NewDeviceRepository(gdb)
+	agentLogRepo := repo.NewAgentLogRepository(gdb)
 	userSvc := services.NewUserService(userRepo)
 	deviceSvc := services.NewDeviceService(deviceRepo)
+	agentLogSvc := services.NewAgentLogService(agentLogRepo)
 	if err := userSvc.EnsureAdmin("admin", "admin123"); err != nil {
 		// non-critical
 	}
@@ -67,17 +69,19 @@ func Build(configPath string) (*App, error) {
 	httpCtrl := controllers.NewHTTPController()
 	signer := &jwtutil.Signer{Secret: []byte(cfg.JWT.Secret), Issuer: cfg.JWT.Issuer, ExpMin: cfg.JWT.ExpMin}
 	authCtrl := controllers.NewAuthController(userSvc, signer)
+	authCtrl.Devices = deviceSvc
 	hub := socket.NewHub()
 	socketCtrl := controllers.NewSocketController(hub)
 	mw := &middleware.Auth{Signer: signer}
 	adminCtrl := controllers.NewAdminController(userSvc)
 	deviceCtrl := controllers.NewDeviceController(deviceSvc)
+	agentLogCtrl := controllers.NewAgentLogController(agentLogSvc)
 
 	// Router
 	cmdCtrl := controllers.NewCommandController(hub)
-	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, mw)
+	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, nil, agentLogCtrl, mw)
 	// Wrap with logging middleware
 	h = middleware.Logging(h)
 
-	return &App{Cfg: cfg, DB: gdb, Router: h, HTTP: httpCtrl, Auth: authCtrl, Admin: adminCtrl, Devices: deviceCtrl, Socket: socketCtrl, Users: userSvc, DeviceSvc: deviceSvc}, nil
+	return &App{Cfg: *cfg, DB: gdb, Router: h, HTTP: httpCtrl, Auth: authCtrl, Admin: adminCtrl, Devices: deviceCtrl, Socket: socketCtrl, Users: userSvc, DeviceSvc: deviceSvc}, nil
 }

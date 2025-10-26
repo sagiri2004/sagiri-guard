@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"sagiri-guard/agent/internal/auth"
 	"sagiri-guard/agent/internal/config"
+	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/logger"
+	"sagiri-guard/agent/internal/osquery"
 	"sagiri-guard/agent/internal/privilege"
 	"sagiri-guard/agent/internal/service"
 	"sagiri-guard/agent/internal/socket"
+	"sagiri-guard/agent/internal/state"
 	"sagiri-guard/backend/global"
 	"sagiri-guard/network"
 	"time"
@@ -19,6 +22,7 @@ func main() {
 		cfgPath    = flag.String("config", "config/config.yaml", "Path to configuration file")
 		maxRetries = flag.Int("max-retries", 10, "Maximum retry attempts for backend connection")
 		retryDelay = flag.Duration("retry-delay", 1*time.Second, "Base delay between retry attempts")
+		elevate    = flag.Bool("elevate", false, "Attempt to elevate to admin (disable by default for go run)")
 	)
 	flag.Parse()
 
@@ -34,8 +38,16 @@ func main() {
 	cfgVals := config.Get()
 	_ = logger.Init(cfgVals.LogPath)
 
-	// Elevate on Windows
-	if !privilege.IsElevated() {
+	// init local sqlite db
+	adb, dberr := db.Init(cfgVals.DBPath)
+	if dberr != nil {
+		logger.Error("Không thể mở SQLite:", dberr)
+		return
+	}
+	_ = adb.AutoMigrate(&db.Token{})
+
+	// Elevate on Windows (optional)
+	if *elevate && !privilege.IsElevated() {
 		if relaunched, err := privilege.AttemptElevate(); err != nil {
 			logger.Error("Không thể yêu cầu quyền admin:", err)
 		} else if relaunched {
@@ -56,6 +68,13 @@ func main() {
 			logger.Error("Đăng nhập thất bại:", err)
 			return
 		}
+	}
+	auth.SetCurrentToken(token)
+	state.SetToken(token)
+
+	// determine device id
+	if si, _, err := osquery.Collect(); err == nil && si.UUID != "" {
+		state.SetDeviceID(si.UUID)
 	}
 
 	// Bootstrap device

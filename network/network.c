@@ -11,6 +11,10 @@
 
 // Link với thư viện ws2_32.lib
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winhttp.lib")
+
+#include <windows.h>
+#include <winhttp.h>
 
 // Các include của POSIX đã bị xóa (unistd.h, arpa/inet.h, v.v.)
 // vì winsock2.h và ws2tcpip.h đã thay thế chúng.
@@ -409,3 +413,131 @@ int http_delete(const char* host, int port, const char* path,
  * @brief Gửi file qua HTTP POST. (Phiên bản Windows)
  */
 // http_post_file removed (unused)
+
+int https_get(const char* host, int port, const char* path,
+              const char* extra_headers, char* response, size_t response_len) {
+    if (!host || !path || !response || response_len == 0) return -1;
+    int use_default_port = (port <= 0);
+    if (use_default_port) port = 443;
+
+    wchar_t whost[256];
+    wchar_t wpath[1024];
+    MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256);
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 1024);
+
+    HINTERNET hSession = WinHttpOpen(L"SagiriGuard/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return -1;
+    HINTERNET hConnect = WinHttpConnect(hSession, whost, (INTERNET_PORT)port, 0);
+    if (!hConnect) { WinHttpCloseHandle(hSession); return -1; }
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", wpath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1; }
+
+    // Extra headers
+    if (extra_headers && extra_headers[0]) {
+        wchar_t wheaders[2048];
+        MultiByteToWideChar(CP_UTF8, 0, extra_headers, -1, wheaders, 2048);
+        if (!WinHttpAddRequestHeaders(hRequest, wheaders, (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD)) {
+            WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1;
+        }
+    }
+
+    BOOL bResults = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+    if (!bResults) { WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1; }
+    bResults = WinHttpReceiveResponse(hRequest, NULL);
+    if (!bResults) { WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1; }
+
+    DWORD dwSize = 0, dwDownloaded = 0; size_t total = 0;
+    do {
+        if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) { break; }
+        if (dwSize == 0) break;
+        if (total + dwSize + 1 > response_len) { dwSize = (DWORD)(response_len - total - 1); }
+        if (dwSize == 0) break;
+        if (!WinHttpReadData(hRequest, response + total, dwSize, &dwDownloaded)) { break; }
+        total += dwDownloaded;
+    } while (dwSize > 0 && total + 1 < response_len);
+    response[total] = '\0';
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    return 0;
+}
+
+static int https_body_request(const wchar_t* method, const char* host, int port, const char* path,
+                              const char* content_type, const char* body, size_t body_len,
+                              const char* extra_headers, char* response, size_t response_len) {
+    if (!host || !path || !response || response_len == 0) return -1;
+    int use_default_port = (port <= 0);
+    if (use_default_port) port = 443;
+
+    wchar_t whost[256];
+    wchar_t wpath[1024];
+    MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 256);
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 1024);
+
+    HINTERNET hSession = WinHttpOpen(L"SagiriGuard/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return -1;
+    HINTERNET hConnect = WinHttpConnect(hSession, whost, (INTERNET_PORT)port, 0);
+    if (!hConnect) { WinHttpCloseHandle(hSession); return -1; }
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, method, wpath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1; }
+
+    // Content-Type
+    if (content_type && content_type[0]) {
+        wchar_t wctype[256];
+        wchar_t hdr[512];
+        MultiByteToWideChar(CP_UTF8, 0, content_type, -1, wctype, 256);
+        swprintf(hdr, 512, L"Content-Type: %s\r\n", wctype);
+        if (!WinHttpAddRequestHeaders(hRequest, hdr, (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD)) {
+            WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1;
+        }
+    }
+    // Extra headers
+    if (extra_headers && extra_headers[0]) {
+        wchar_t wheaders[2048];
+        MultiByteToWideChar(CP_UTF8, 0, extra_headers, -1, wheaders, 2048);
+        if (!WinHttpAddRequestHeaders(hRequest, wheaders, (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD)) {
+            WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1;
+        }
+    }
+
+    BOOL bResults = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                       (LPVOID)body, (DWORD)body_len, (DWORD)body_len, 0);
+    if (!bResults) { WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1; }
+    bResults = WinHttpReceiveResponse(hRequest, NULL);
+    if (!bResults) { WinHttpCloseHandle(hRequest); WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return -1; }
+
+    DWORD dwSize = 0, dwDownloaded = 0; size_t total = 0;
+    do {
+        if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) { break; }
+        if (dwSize == 0) break;
+        if (total + dwSize + 1 > response_len) { dwSize = (DWORD)(response_len - total - 1); }
+        if (dwSize == 0) break;
+        if (!WinHttpReadData(hRequest, response + total, dwSize, &dwDownloaded)) { break; }
+        total += dwDownloaded;
+    } while (dwSize > 0 && total + 1 < response_len);
+    response[total] = '\0';
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    return 0;
+}
+
+int https_post(const char* host, int port, const char* path,
+               const char* content_type, const char* body, size_t body_len,
+               const char* extra_headers, char* response, size_t response_len) {
+    return https_body_request(L"POST", host, port, path, content_type, body, body_len, extra_headers, response, response_len);
+}
+
+int https_put(const char* host, int port, const char* path,
+              const char* content_type, const char* body, size_t body_len,
+              const char* extra_headers, char* response, size_t response_len) {
+    return https_body_request(L"PUT", host, port, path, content_type, body, body_len, extra_headers, response, response_len);
+}
+
+int https_delete(const char* host, int port, const char* path,
+                 const char* extra_headers, char* response, size_t response_len) {
+    // DELETE typically has no body
+    return https_body_request(L"DELETE", host, port, path, NULL, NULL, 0, extra_headers, response, response_len);
+}

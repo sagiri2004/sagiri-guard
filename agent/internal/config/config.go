@@ -9,12 +9,14 @@ import (
 )
 
 type AppConfig struct {
-	BackendHost string
-	BackendHTTP int
-	BackendTCP  int
-	TokenPath   string
-	LogPath     string
-	OsqueryPath string
+	BackendHost  string
+	BackendHTTP  int
+	BackendTCP   int
+	TokenPath    string
+	LogPath      string
+	OsqueryPath  string
+	MonitorPaths []string
+	DBPath       string
 }
 
 var cfg AppConfig
@@ -32,16 +34,19 @@ func Init() AppConfig {
 	v.SetDefault("agent.backend.http", 9400)
 	v.SetDefault("agent.backend.tcp", 9200)
 	v.SetDefault("agent.token_path", defaultToken)
-
+	v.SetDefault("agent.monitor_paths", []string{})
+	v.SetDefault("agent.db_path", filepath.Join(os.TempDir(), "sagiri-guard", "agent.db"))
 	_ = v.ReadInConfig()
 
 	cfg = AppConfig{
-		BackendHost: v.GetString("agent.backend.host"),
-		BackendHTTP: v.GetInt("agent.backend.http"),
-		BackendTCP:  v.GetInt("agent.backend.tcp"),
-		TokenPath:   v.GetString("agent.token_path"),
-		LogPath:     v.GetString("agent.log_path"),
-		OsqueryPath: v.GetString("agent.osquery_path"),
+		BackendHost:  v.GetString("agent.backend.host"),
+		BackendHTTP:  v.GetInt("agent.backend.http"),
+		BackendTCP:   v.GetInt("agent.backend.tcp"),
+		TokenPath:    v.GetString("agent.token_path"),
+		LogPath:      v.GetString("agent.log_path"),
+		OsqueryPath:  v.GetString("agent.osquery_path"),
+		MonitorPaths: v.GetStringSlice("agent.monitor_paths"),
+		DBPath:       v.GetString("agent.db_path"),
 	}
 	return cfg
 }

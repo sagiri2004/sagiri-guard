@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	Config config.Config
+	Config *config.Config
 	Logger zerolog.Logger
 	Mdb    *gorm.DB
 	Rdb    *redis.Client

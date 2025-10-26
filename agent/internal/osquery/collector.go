@@ -1,10 +1,12 @@
 package osquery
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os/exec"
 	"sagiri-guard/agent/internal/config"
+	"time"
 )
 
 type SystemInfo struct {
@@ -24,8 +26,13 @@ func runJSON(query string, out interface{}) error {
 	if bin == "" {
 		bin = "osqueryi"
 	}
-	cmd := exec.Command(bin, "--json", query)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "--json", query)
 	raw, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return errors.New("osquery timeout")
+	}
 	if err != nil {
 		return err
 	}

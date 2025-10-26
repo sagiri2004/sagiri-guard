@@ -5,7 +5,10 @@ import (
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/device"
 	"sagiri-guard/agent/internal/logger"
+	"sagiri-guard/agent/internal/monitor"
 	osq "sagiri-guard/agent/internal/osquery"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func Login(username, password string) (string, error) {
@@ -27,5 +30,25 @@ func BootstrapDevice(token string) (string, error) {
 			return "", err
 		}
 	}
+
+	// monitor files
+	monitor, err := monitor.NewFileMonitor(cfg.MonitorPaths)
+	if err != nil {
+		logger.Errorf("failed to create file monitor: %v", err)
+	}
+	monitorFilesChan := monitor.MonitorFiles()
+	go func() {
+		for event := range monitorFilesChan {
+			switch event.Op {
+			case fsnotify.Write:
+				logger.Infof("File modified: %s", event.Name)
+			case fsnotify.Create:
+				logger.Infof("File created: %s", event.Name)
+			case fsnotify.Remove:
+				logger.Infof("File deleted: %s", event.Name)
+			}
+		}
+	}()
+
 	return dev.UUID, nil
 }

@@ -11,7 +11,7 @@ type Routes struct {
 	Admin  http.Handler
 }
 
-func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthController, adminCtrl *controllers.AdminController, deviceCtrl *controllers.DeviceController, cmdCtrl *controllers.CommandController, mw *middleware.Auth) http.Handler {
+func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthController, adminCtrl *controllers.AdminController, deviceCtrl *controllers.DeviceController, cmdCtrl *controllers.CommandController, backupCtrl *controllers.BackupController, agentLogCtrl *controllers.AgentLogController, mw *middleware.Auth) http.Handler {
 	mux := http.NewServeMux()
 	// public
 	mux.HandleFunc("/ping", httpCtrl.Ping)
@@ -34,9 +34,18 @@ func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthC
 	mux.Handle("/devices", mw.RequireAuth(http.HandlerFunc(deviceCtrl.GetByUUID)))
 	mux.Handle("/devices/register", mw.RequireAuth(http.HandlerFunc(deviceCtrl.RegisterOrUpdate)))
 
-	// device endpoints
-	// We need DB inside controller, constructed in initializer
-	// We'll attach in initializer by wrapping this router if needed; for simplicity add placeholders here
+	// backup onedrive (auth required)
+	if backupCtrl != nil {
+		mux.Handle("/backup/onedrive/credential", mw.RequireAuth(http.HandlerFunc(backupCtrl.GetUploadCredential)))
+		mux.Handle("/backup/onedrive/files", mw.RequireAuth(http.HandlerFunc(backupCtrl.GetAllCurrentFiles)))
+		mux.Handle("/backup/onedrive/file/versions", mw.RequireAuth(http.HandlerFunc(backupCtrl.GetVersionByFileId)))
+		mux.Handle("/backup/onedrive/file/version", mw.RequireAuth(http.HandlerFunc(backupCtrl.GetVersionByFileIdAndVersionId)))
+		mux.Handle("/backup/onedrive/files-versions", mw.RequireAuth(http.HandlerFunc(backupCtrl.GetAllCurrentFilesAndVersions)))
+	}
+
+	// agent logs
+	mux.Handle("/agent/log", mw.RequireAuth(http.HandlerFunc(agentLogCtrl.Post)))
+	mux.Handle("/agent/log/latest", mw.RequireAuth(http.HandlerFunc(agentLogCtrl.GetLatest)))
 
 	return mux
 }

@@ -10,6 +10,7 @@ type Claims struct {
 	UserID   uint   `json:"uid"`
 	Username string `json:"uname"`
 	Role     string `json:"role"`
+	DeviceID string `json:"device_id"`
 	jwt.RegisteredClaims
 }
 

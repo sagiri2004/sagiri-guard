@@ -3,7 +3,7 @@ package network
 /*
 #cgo CFLAGS: -I${SRCDIR}
 // SỬA LỖI: Thêm -lws2_32 để link thư viện Winsock trên Windows
-#cgo LDFLAGS: -L${SRCDIR} -lnetwork -lws2_32
+#cgo LDFLAGS: -L${SRCDIR} -lnetwork -lws2_32 -lwinhttp
 #include <stdlib.h>
 #include "network.h"
 */
@@ -11,7 +11,11 @@ import "C"
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"unsafe"
 )
@@ -180,11 +184,62 @@ func buildExtraHeaders(headers map[string]string) (*C.char, func()) {
 	}
 }
 
+// httpDoTLS performs HTTPS requests using Go's net/http for TLS support.
+func httpDoTLS(method string, host string, port int, path string, contentType string, body []byte, headers map[string]string) (string, error) {
+	url := "https://" + host
+	if port != 443 {
+		url += fmt.Sprintf(":%d", port)
+	}
+	if !strings.HasPrefix(path, "/") {
+		url += "/" + path
+	} else {
+		url += path
+	}
+	var reqBody io.Reader
+	if len(body) > 0 {
+		reqBody = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, reqBody)
+	if err != nil {
+		return "", err
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	respStr := goStringFromBuffer(b)
+	respStr = extractHTTPBody(strings.TrimSpace(respStr))
+	return respStr, nil
+}
+
 func HTTPGet(host string, port int, path string) (string, error) {
 	return HTTPGetWithHeaders(host, port, path, nil)
 }
 
 func HTTPGetWithHeaders(host string, port int, path string, headers map[string]string) (string, error) {
+	if port == 443 {
+		buf := make([]byte, 128*1024)
+		extra, release := buildExtraHeaders(headers)
+		defer release()
+		if C.https_get(C.CString(host), C.int(port), C.CString(path), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
+			return "", errors.New("https get failed")
+		}
+		resp := goStringFromBuffer(buf)
+		resp = extractHTTPBody(strings.TrimSpace(resp))
+		return resp, nil
+	}
 	buf := make([]byte, 128*1024)
 	cHost := C.CString(host)
 	cPath := C.CString(path)
@@ -196,7 +251,9 @@ func HTTPGetWithHeaders(host string, port int, path string, headers map[string]s
 	if C.http_get(cHost, C.int(port), cPath, extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
 		return "", errors.New("http get failed")
 	}
-	return goStringFromBuffer(buf), nil
+	resp := goStringFromBuffer(buf)
+	resp = extractHTTPBody(strings.TrimSpace(resp))
+	return resp, nil
 }
 
 func HTTPDelete(host string, port int, path string) (string, error) {
@@ -204,6 +261,17 @@ func HTTPDelete(host string, port int, path string) (string, error) {
 }
 
 func HTTPDeleteWithHeaders(host string, port int, path string, headers map[string]string) (string, error) {
+	if port == 443 {
+		buf := make([]byte, 128*1024)
+		extra, release := buildExtraHeaders(headers)
+		defer release()
+		if C.https_delete(C.CString(host), C.int(port), C.CString(path), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
+			return "", errors.New("https delete failed")
+		}
+		resp := goStringFromBuffer(buf)
+		resp = extractHTTPBody(strings.TrimSpace(resp))
+		return resp, nil
+	}
 	buf := make([]byte, 128*1024)
 	cHost := C.CString(host)
 	cPath := C.CString(path)
@@ -214,7 +282,9 @@ func HTTPDeleteWithHeaders(host string, port int, path string, headers map[strin
 	if C.http_delete(cHost, C.int(port), cPath, extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
 		return "", errors.New("http delete failed")
 	}
-	return goStringFromBuffer(buf), nil
+	resp := goStringFromBuffer(buf)
+	resp = extractHTTPBody(strings.TrimSpace(resp))
+	return resp, nil
 }
 
 func HTTPPost(host string, port int, path, contentType string, body []byte) (string, error) {
@@ -222,6 +292,27 @@ func HTTPPost(host string, port int, path, contentType string, body []byte) (str
 }
 
 func HTTPPostWithHeaders(host string, port int, path, contentType string, body []byte, headers map[string]string) (string, error) {
+	if port == 443 {
+		buf := make([]byte, 128*1024)
+		extra, release := buildExtraHeaders(headers)
+		defer release()
+		var cType *C.char
+		if contentType != "" {
+			cType = C.CString(contentType)
+			defer C.free(unsafe.Pointer(cType))
+		}
+		var bodyPtr *C.char
+		if len(body) > 0 {
+			bodyPtr = (*C.char)(C.CBytes(body))
+			defer C.free(unsafe.Pointer(bodyPtr))
+		}
+		if C.https_post(C.CString(host), C.int(port), C.CString(path), cType, bodyPtr, C.size_t(len(body)), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
+			return "", errors.New("https post failed")
+		}
+		resp := goStringFromBuffer(buf)
+		resp = extractHTTPBody(strings.TrimSpace(resp))
+		return resp, nil
+	}
 	buf := make([]byte, 128*1024)
 	cHost := C.CString(host)
 	cPath := C.CString(path)
@@ -244,7 +335,9 @@ func HTTPPostWithHeaders(host string, port int, path, contentType string, body [
 	if rc != 0 {
 		return "", errors.New("http post failed")
 	}
-	return goStringFromBuffer(buf), nil
+	resp := goStringFromBuffer(buf)
+	resp = extractHTTPBody(strings.TrimSpace(resp))
+	return resp, nil
 }
 
 func HTTPPut(host string, port int, path, contentType string, body []byte) (string, error) {
@@ -252,6 +345,27 @@ func HTTPPut(host string, port int, path, contentType string, body []byte) (stri
 }
 
 func HTTPPutWithHeaders(host string, port int, path, contentType string, body []byte, headers map[string]string) (string, error) {
+	if port == 443 {
+		buf := make([]byte, 128*1024)
+		extra, release := buildExtraHeaders(headers)
+		defer release()
+		var cType *C.char
+		if contentType != "" {
+			cType = C.CString(contentType)
+			defer C.free(unsafe.Pointer(cType))
+		}
+		var bodyPtr *C.char
+		if len(body) > 0 {
+			bodyPtr = (*C.char)(C.CBytes(body))
+			defer C.free(unsafe.Pointer(bodyPtr))
+		}
+		if C.https_put(C.CString(host), C.int(port), C.CString(path), cType, bodyPtr, C.size_t(len(body)), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
+			return "", errors.New("https put failed")
+		}
+		resp := goStringFromBuffer(buf)
+		resp = extractHTTPBody(strings.TrimSpace(resp))
+		return resp, nil
+	}
 	buf := make([]byte, 128*1024)
 	cHost := C.CString(host)
 	cPath := C.CString(path)
@@ -273,7 +387,9 @@ func HTTPPutWithHeaders(host string, port int, path, contentType string, body []
 	if rc != 0 {
 		return "", errors.New("http put failed")
 	}
-	return goStringFromBuffer(buf), nil
+	resp := goStringFromBuffer(buf)
+	resp = extractHTTPBody(strings.TrimSpace(resp))
+	return resp, nil
 }
 
 func SendTokenHeaders(c *TCPClient, headers map[string]string) error {
@@ -330,4 +446,17 @@ func goStringFromBuffer(b []byte) string {
 		n++
 	}
 	return string(b[:n])
+}
+
+// extractHTTPBody returns body if raw is a full HTTP response, otherwise returns raw.
+func extractHTTPBody(raw string) string {
+	if strings.HasPrefix(raw, "HTTP/") {
+		if idx := strings.Index(raw, "\r\n\r\n"); idx != -1 {
+			return raw[idx+4:]
+		}
+		if idx := strings.Index(raw, "\n\n"); idx != -1 {
+			return raw[idx+2:]
+		}
+	}
+	return raw
 }
