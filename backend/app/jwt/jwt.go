@@ -20,11 +20,11 @@ type Signer struct {
 	ExpMin int
 }
 
-func (s *Signer) Sign(userID uint, username, role string) (string, error) {
+func (s *Signer) Sign(userID uint, username, role, deviceID string) (string, error) {
 	now := time.Now()
 	exp := now.Add(time.Duration(s.ExpMin) * time.Minute)
 	claims := Claims{
-		UserID: userID, Username: username, Role: role,
+		UserID: userID, Username: username, Role: role, DeviceID: deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: s.Issuer, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(exp)},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

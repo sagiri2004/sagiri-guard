@@ -2,9 +2,11 @@ package command
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sagiri-guard/agent/internal/backup"
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/state"
@@ -98,29 +100,47 @@ func (h backupAutoHandler) Start(arg any) (func() error, error) {
 	return stop, nil
 }
 
-// Example for a new command 'restore' with custom argument structure.
-// Users can add a new file with its struct and handler following this pattern.
 type restoreArg struct {
-	FileID string `json:"file_id"`
-	URL    string `json:"url"`
+	FileName string `json:"file_name"`
+	DestPath string `json:"dest_path,omitempty"`
 }
 
 type restoreHandler struct{}
 
 func (h restoreHandler) Kind() Kind { return KindOnce }
 func (h restoreHandler) DecodeArg(raw json.RawMessage) (any, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
 	var a restoreArg
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return nil, err
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, err
+		}
+	}
+	if a.FileName == "" {
+		return nil, fmt.Errorf("missing file_name")
+	}
+	if a.DestPath == "" {
+		a.DestPath = filepath.Join(os.TempDir(), "sagiri-restore", filepath.Base(a.FileName))
 	}
 	return a, nil
 }
 func (h restoreHandler) HandleOnce(arg any) error {
-	logger.Infof("Executing restore with arg=%v", arg)
-	// TODO: implement restore logic (download and place file)
+	a, ok := arg.(restoreArg)
+	if !ok {
+		return fmt.Errorf("invalid argument type")
+	}
+	token := strings.TrimSpace(state.GetToken())
+	if token == "" {
+		return fmt.Errorf("missing token")
+	}
+	host, port := config.BackendHTTP()
+	session, err := backup.InitDownload(host, port, token, a.FileName)
+	if err != nil {
+		return err
+	}
+	if err := backup.DownloadFile(session, a.DestPath); err != nil {
+		return err
+	}
+	logger.Infof("Restored %s to %s", a.FileName, a.DestPath)
 	return nil
 }
 func (h restoreHandler) Start(arg any) (func() error, error) { return nil, nil }

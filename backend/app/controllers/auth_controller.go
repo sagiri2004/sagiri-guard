@@ -40,7 +40,7 @@ func (c *AuthController) Login(w http.ResponseWriter, r *http.Request) {
 		_ = c.Devices.UpsertDevice(&d)
 	}
 	// issue token; DeviceID is placed in claims by upper layers if needed later
-	token, err := c.Signer.Sign(u.ID, u.Username, u.Role)
+	token, err := c.Signer.Sign(u.ID, u.Username, u.Role, req.DeviceID)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"token error"}`))

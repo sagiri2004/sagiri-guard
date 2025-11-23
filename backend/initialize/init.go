@@ -29,6 +29,7 @@ type App struct {
 	Socket    *controllers.SocketController
 	Users     *services.UserService
 	DeviceSvc *services.DeviceService
+	Backup    *controllers.BackupController
 }
 
 func Build(configPath string) (*App, error) {
@@ -58,6 +59,10 @@ func Build(configPath string) (*App, error) {
 	userSvc := services.NewUserService(userRepo)
 	deviceSvc := services.NewDeviceService(deviceRepo)
 	agentLogSvc := services.NewAgentLogService(agentLogRepo)
+	backupSvc, err := services.NewBackupService(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("init backup service: %w", err)
+	}
 	if err := userSvc.EnsureAdmin("admin", "admin123"); err != nil {
 		// non-critical
 	}
@@ -76,12 +81,13 @@ func Build(configPath string) (*App, error) {
 	adminCtrl := controllers.NewAdminController(userSvc)
 	deviceCtrl := controllers.NewDeviceController(deviceSvc)
 	agentLogCtrl := controllers.NewAgentLogController(agentLogSvc)
+	backupCtrl := controllers.NewBackupController(backupSvc)
 
 	// Router
 	cmdCtrl := controllers.NewCommandController(hub)
-	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, nil, agentLogCtrl, mw)
+	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, backupCtrl, agentLogCtrl, mw)
 	// Wrap with logging middleware
 	h = middleware.Logging(h)
 
-	return &App{Cfg: *cfg, DB: gdb, Router: h, HTTP: httpCtrl, Auth: authCtrl, Admin: adminCtrl, Devices: deviceCtrl, Socket: socketCtrl, Users: userSvc, DeviceSvc: deviceSvc}, nil
+	return &App{Cfg: *cfg, DB: gdb, Router: h, HTTP: httpCtrl, Auth: authCtrl, Admin: adminCtrl, Devices: deviceCtrl, Socket: socketCtrl, Users: userSvc, DeviceSvc: deviceSvc, Backup: backupCtrl}, nil
 }

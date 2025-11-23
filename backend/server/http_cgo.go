@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sagiri-guard/backend/global"
 	"sagiri-guard/network"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // StartHTTPServerC starts an HTTP server using the cgo-based TCP stack from the network package.
@@ -81,6 +83,15 @@ func serveConn(handler http.Handler, c *network.TCPClient) {
 		return
 	}
 	method, target := rl[0], rl[1]
+	now := time.Now()
+	global.Logger.Info().
+		Str("method", method).
+		Str("path", target).
+		Msg("http_cgo: incoming")
+	fmt.Printf("%s | --- |          | RECV  %-6s %s\n",
+		now.Format("2006/01/02 15:04:05"),
+		method,
+		target)
 
 	// Headers
 	hdr := make(http.Header)
@@ -133,7 +144,21 @@ func serveConn(handler http.Handler, c *network.TCPClient) {
 	}
 
 	rw := newTCPResponseWriter()
+	start := time.Now()
 	handler.ServeHTTP(rw, req)
+	duration := time.Since(start)
+	global.Logger.Info().
+		Str("method", method).
+		Str("path", target).
+		Int("status", rw.statusCode).
+		Dur("duration", duration).
+		Msg("http_cgo")
+	fmt.Printf("%s | %3d | %10s | %-6s %s\n",
+		time.Now().Format("2006/01/02 15:04:05"),
+		rw.statusCode,
+		duration,
+		method,
+		target)
 
 	// Write response
 	if rw.hdr.Get("Content-Type") == "" {

@@ -1,12 +1,18 @@
 package service
 
 import (
+	"os"
+	"strings"
+	"time"
+
 	"sagiri-guard/agent/internal/auth"
+	"sagiri-guard/agent/internal/backup"
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/device"
 	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/monitor"
 	osq "sagiri-guard/agent/internal/osquery"
+	"sagiri-guard/agent/internal/state"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -32,23 +38,59 @@ func BootstrapDevice(token string) (string, error) {
 	}
 
 	// monitor files
-	monitor, err := monitor.NewFileMonitor(cfg.MonitorPaths)
-	if err != nil {
-		logger.Errorf("failed to create file monitor: %v", err)
-	}
-	monitorFilesChan := monitor.MonitorFiles()
-	go func() {
-		for event := range monitorFilesChan {
-			switch event.Op {
-			case fsnotify.Write:
-				logger.Infof("File modified: %s", event.Name)
-			case fsnotify.Create:
-				logger.Infof("File created: %s", event.Name)
-			case fsnotify.Remove:
-				logger.Infof("File deleted: %s", event.Name)
-			}
+	if len(cfg.MonitorPaths) > 0 {
+		if fm, err := monitor.NewFileMonitor(cfg.MonitorPaths); err != nil {
+			logger.Errorf("failed to create file monitor: %v", err)
+		} else {
+			ch := fm.MonitorFiles()
+			go func() {
+				for event := range ch {
+					if event.Name == "" {
+						continue
+					}
+					switch {
+					case event.Op&fsnotify.Create == fsnotify.Create:
+						logger.Infof("File created: %s", event.Name)
+						go scheduleBackup(event.Name)
+					case event.Op&fsnotify.Write == fsnotify.Write:
+						logger.Infof("File modified: %s", event.Name)
+						go scheduleBackup(event.Name)
+					case event.Op&fsnotify.Remove == fsnotify.Remove:
+						logger.Infof("File deleted: %s", event.Name)
+					case event.Op&fsnotify.Rename == fsnotify.Rename:
+						logger.Infof("File renamed: %s", event.Name)
+					}
+				}
+			}()
 		}
-	}()
+	}
 
 	return dev.UUID, nil
+}
+
+func scheduleBackup(path string) {
+	time.Sleep(1 * time.Second)
+	if err := backupFile(path); err != nil {
+		logger.Errorf("auto backup failed for %s: %v", path, err)
+	}
+}
+
+func backupFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return nil
+	}
+	token := strings.TrimSpace(state.GetToken())
+	if token == "" {
+		return nil
+	}
+	host, port := config.BackendHTTP()
+	session, err := backup.InitUpload(host, port, token, path)
+	if err != nil {
+		return err
+	}
+	return backup.UploadFile(session, path)
 }

@@ -32,6 +32,12 @@ type Onedrive struct {
 	DriveType    string
 	DriveID      string
 }
+
+type Backup struct {
+	StoragePath string
+	ChunkSize   int64
+	TCP         TCP
+}
 type Config struct {
 	HTTP HTTP
 	TCP  TCP
@@ -42,6 +48,7 @@ type Config struct {
 		ExpMin int
 	}
 	Onedrive Onedrive
+	Backup   Backup
 }
 
 func Load(path string) (*Config, error) {
@@ -65,6 +72,10 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("backend.onedrive.root_folder_id", "")
 	v.SetDefault("backend.onedrive.drive_type", "personal")
 	v.SetDefault("backend.onedrive.drive_id", "")
+	v.SetDefault("backend.backup.storage_path", "backups")
+	v.SetDefault("backend.backup.chunk_size", 524288)
+	v.SetDefault("backend.backup.tcp.host", v.GetString("backend.tcp.host"))
+	v.SetDefault("backend.backup.tcp.port", v.GetInt("backend.tcp.port")+1)
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
@@ -80,6 +91,14 @@ func Load(path string) (*Config, error) {
 			RootFolderID: v.GetString("backend.onedrive.root_folder_id"),
 			DriveType:    v.GetString("backend.onedrive.drive_type"),
 			DriveID:      v.GetString("backend.onedrive.drive_id"),
+		},
+		Backup: Backup{
+			StoragePath: v.GetString("backend.backup.storage_path"),
+			ChunkSize:   v.GetInt64("backend.backup.chunk_size"),
+			TCP: TCP{
+				Host: v.GetString("backend.backup.tcp.host"),
+				Port: v.GetInt("backend.backup.tcp.port"),
+			},
 		},
 	}
 	cfg.JWT.Secret = v.GetString("backend.jwt.secret")

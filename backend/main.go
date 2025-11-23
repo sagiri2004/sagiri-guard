@@ -40,5 +40,14 @@ func main() {
 	}()
 	fmt.Printf("TCP server đang lắng nghe tại %s:%d\n", app.Cfg.TCP.Host, app.Cfg.TCP.Port)
 
+	if app.Backup != nil {
+		go func() {
+			if err := server.StartTCPServer(app.Cfg.Backup.TCP.Host, app.Cfg.Backup.TCP.Port, app.Backup.HandleTransfer); err != nil {
+				fmt.Println("Backup TCP server dừng với lỗi:", err)
+			}
+		}()
+		fmt.Printf("Backup TCP server đang lắng nghe tại %s:%d\n", app.Cfg.Backup.TCP.Host, app.Cfg.Backup.TCP.Port)
+	}
+
 	select {}
 }
