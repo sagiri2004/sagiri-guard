@@ -74,6 +74,7 @@ func serveConn(handler http.Handler, c *network.TCPClient) {
 		bodyRemainder = parts[1]
 	}
 
+
 	reader := bufio.NewReader(strings.NewReader(head))
 	// Request line
 	reqLine, _ := reader.ReadString('\n')
@@ -93,23 +94,22 @@ func serveConn(handler http.Handler, c *network.TCPClient) {
 		method,
 		target)
 
-	// Headers
+	// Headers - parse by splitting on \r\n instead of reading line by line
 	hdr := make(http.Header)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			break
-		}
-		line = strings.TrimRight(line, "\r\n")
+	headerLines := strings.Split(head, "\r\n")
+	// Skip first line (request line) and last empty line
+	for i := 1; i < len(headerLines); i++ {
+		line := strings.TrimSpace(headerLines[i])
 		if line == "" {
 			break
 		}
 		kv := strings.SplitN(line, ":", 2)
 		if len(kv) == 2 {
-			hdr.Add(strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1]))
+			key := strings.TrimSpace(kv[0])
+			value := strings.TrimSpace(kv[1])
+			hdr.Add(key, value)
 		}
 	}
-
 	// Body
 	var body []byte
 	want := 0

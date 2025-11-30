@@ -3,22 +3,84 @@ package network
 /*
 #cgo CFLAGS: -I${SRCDIR}
 // SỬA LỖI: Thêm -lws2_32 để link thư viện Winsock trên Windows
-#cgo LDFLAGS: -L${SRCDIR} -lnetwork -lws2_32 -lwinhttp
+#cgo LDFLAGS: -L${SRCDIR} -lnetwork -lws2_32
 #include <stdlib.h>
+#include <stddef.h>
+extern int http_request(const char* host, int port, const char* method, const char* path,
+                        const char* content_type, const char* body, size_t body_len,
+                        const char* extra_headers, char* response, size_t response_len);
 #include "network.h"
 */
 import "C"
 
 import (
 	"bytes"
-	"crypto/tls"
 	"errors"
-	"fmt"
-	"io"
-	"net/http"
+	"strconv"
 	"strings"
 	"unsafe"
 )
+
+var errHTTPSUnsupported = errors.New("https not supported in local mode")
+
+func httpRequest(method, host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
+	if port == 443 {
+		return 0, "", errHTTPSUnsupported
+	}
+	if host == "" {
+		return 0, "", errors.New("host is required")
+	}
+	if path == "" {
+		path = "/"
+	}
+
+	buf := make([]byte, 128*1024)
+
+	cHost := C.CString(host)
+	defer C.free(unsafe.Pointer(cHost))
+	cMethod := C.CString(strings.ToUpper(method))
+	defer C.free(unsafe.Pointer(cMethod))
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	var cType *C.char
+	if contentType != "" {
+		cType = C.CString(contentType)
+		defer C.free(unsafe.Pointer(cType))
+	}
+
+	var cBody *C.char
+	var bodyLen C.size_t
+	if len(body) > 0 {
+		tmp := C.CBytes(body)
+		cBody = (*C.char)(tmp)
+		bodyLen = C.size_t(len(body))
+		defer C.free(tmp)
+	}
+
+	extra, release := buildExtraHeaders(headers)
+	defer release()
+
+	rc := C.http_request(
+		cHost,
+		C.int(port),
+		cMethod,
+		cPath,
+		cType,
+		cBody,
+		bodyLen,
+		extra,
+		(*C.char)(unsafe.Pointer(&buf[0])),
+		C.size_t(len(buf)),
+	)
+	if rc != 0 {
+		return 0, "", errors.New("http request failed")
+	}
+
+	raw := goStringFromBuffer(buf)
+	status, resp := parseStatusAndBody(strings.TrimSpace(raw))
+	return status, resp, nil
+}
 
 // Init initializes the C networking library (WSAStartup on Windows).
 // This MUST be called once at the start of the application.
@@ -176,7 +238,11 @@ func buildExtraHeaders(headers map[string]string) (*C.char, func()) {
 		builder.WriteString(v)
 		builder.WriteString("\r\n")
 	}
-	ptr := C.CString(builder.String())
+	result := builder.String()
+	if result == "" {
+		return nil, func() {}
+	}
+	ptr := C.CString(result)
 	return ptr, func() {
 		if ptr != nil {
 			C.free(unsafe.Pointer(ptr))
@@ -184,212 +250,65 @@ func buildExtraHeaders(headers map[string]string) (*C.char, func()) {
 	}
 }
 
-// httpDoTLS performs HTTPS requests using Go's net/http for TLS support.
-func httpDoTLS(method string, host string, port int, path string, contentType string, body []byte, headers map[string]string) (string, error) {
-	url := "https://" + host
-	if port != 443 {
-		url += fmt.Sprintf(":%d", port)
-	}
-	if !strings.HasPrefix(path, "/") {
-		url += "/" + path
-	} else {
-		url += path
-	}
-	var reqBody io.Reader
-	if len(body) > 0 {
-		reqBody = bytes.NewReader(body)
-	}
-	req, err := http.NewRequest(method, url, reqBody)
-	if err != nil {
-		return "", err
-	}
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	respStr := goStringFromBuffer(b)
-	respStr = extractHTTPBody(strings.TrimSpace(respStr))
-	return respStr, nil
-}
-
 func HTTPGet(host string, port int, path string) (string, error) {
-	return HTTPGetWithHeaders(host, port, path, nil)
+	_, body, err := HTTPRequest("GET", host, port, path, "", nil, nil)
+	return body, err
 }
 
 func HTTPGetWithHeaders(host string, port int, path string, headers map[string]string) (string, error) {
-	if port == 443 {
-		buf := make([]byte, 128*1024)
-		extra, release := buildExtraHeaders(headers)
-		defer release()
-		if C.https_get(C.CString(host), C.int(port), C.CString(path), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
-			return "", errors.New("https get failed")
-		}
-		resp := goStringFromBuffer(buf)
-		resp = extractHTTPBody(strings.TrimSpace(resp))
-		return resp, nil
-	}
-	buf := make([]byte, 128*1024)
-	cHost := C.CString(host)
-	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cHost))
-	defer C.free(unsafe.Pointer(cPath))
-	extra, release := buildExtraHeaders(headers)
-	defer release()
-	// C.http_get trả về 0 nếu thành công, -1 nếu thất bại.
-	if C.http_get(cHost, C.int(port), cPath, extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
-		return "", errors.New("http get failed")
-	}
-	resp := goStringFromBuffer(buf)
-	resp = extractHTTPBody(strings.TrimSpace(resp))
-	return resp, nil
+	_, body, err := HTTPRequest("GET", host, port, path, "", nil, headers)
+	return body, err
+}
+
+func HTTPGetWithHeadersEx(host string, port int, path string, headers map[string]string) (int, string, error) {
+	return httpRequest("GET", host, port, path, "", nil, headers)
 }
 
 func HTTPDelete(host string, port int, path string) (string, error) {
-	return HTTPDeleteWithHeaders(host, port, path, nil)
+	_, body, err := HTTPRequest("DELETE", host, port, path, "", nil, nil)
+	return body, err
 }
 
 func HTTPDeleteWithHeaders(host string, port int, path string, headers map[string]string) (string, error) {
-	if port == 443 {
-		buf := make([]byte, 128*1024)
-		extra, release := buildExtraHeaders(headers)
-		defer release()
-		if C.https_delete(C.CString(host), C.int(port), C.CString(path), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
-			return "", errors.New("https delete failed")
-		}
-		resp := goStringFromBuffer(buf)
-		resp = extractHTTPBody(strings.TrimSpace(resp))
-		return resp, nil
-	}
-	buf := make([]byte, 128*1024)
-	cHost := C.CString(host)
-	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cHost))
-	defer C.free(unsafe.Pointer(cPath))
-	extra, release := buildExtraHeaders(headers)
-	defer release()
-	if C.http_delete(cHost, C.int(port), cPath, extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
-		return "", errors.New("http delete failed")
-	}
-	resp := goStringFromBuffer(buf)
-	resp = extractHTTPBody(strings.TrimSpace(resp))
-	return resp, nil
+	_, body, err := HTTPRequest("DELETE", host, port, path, "", nil, headers)
+	return body, err
+}
+
+func HTTPDeleteWithHeadersEx(host string, port int, path string, headers map[string]string) (int, string, error) {
+	return httpRequest("DELETE", host, port, path, "", nil, headers)
 }
 
 func HTTPPost(host string, port int, path, contentType string, body []byte) (string, error) {
-	return HTTPPostWithHeaders(host, port, path, contentType, body, nil)
+	_, resp, err := HTTPRequest("POST", host, port, path, contentType, body, nil)
+	return resp, err
 }
 
 func HTTPPostWithHeaders(host string, port int, path, contentType string, body []byte, headers map[string]string) (string, error) {
-	if port == 443 {
-		buf := make([]byte, 128*1024)
-		extra, release := buildExtraHeaders(headers)
-		defer release()
-		var cType *C.char
-		if contentType != "" {
-			cType = C.CString(contentType)
-			defer C.free(unsafe.Pointer(cType))
-		}
-		var bodyPtr *C.char
-		if len(body) > 0 {
-			bodyPtr = (*C.char)(C.CBytes(body))
-			defer C.free(unsafe.Pointer(bodyPtr))
-		}
-		if C.https_post(C.CString(host), C.int(port), C.CString(path), cType, bodyPtr, C.size_t(len(body)), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
-			return "", errors.New("https post failed")
-		}
-		resp := goStringFromBuffer(buf)
-		resp = extractHTTPBody(strings.TrimSpace(resp))
-		return resp, nil
-	}
-	buf := make([]byte, 128*1024)
-	cHost := C.CString(host)
-	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cHost))
-	defer C.free(unsafe.Pointer(cPath))
-	var cType *C.char
-	if contentType != "" {
-		cType = C.CString(contentType)
-		defer C.free(unsafe.Pointer(cType))
-	}
-	var bodyPtr unsafe.Pointer
-	if len(body) > 0 {
-		// Dùng C.CBytes để cấp phát bộ nhớ C và sao chép dữ liệu Go sang
-		bodyPtr = C.CBytes(body)
-		defer C.free(bodyPtr)
-	}
-	extra, release := buildExtraHeaders(headers)
-	defer release()
-	rc := C.http_post(cHost, C.int(port), cPath, cType, (*C.char)(bodyPtr), C.size_t(len(body)), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)))
-	if rc != 0 {
-		return "", errors.New("http post failed")
-	}
-	resp := goStringFromBuffer(buf)
-	resp = extractHTTPBody(strings.TrimSpace(resp))
-	return resp, nil
+	_, resp, err := HTTPRequest("POST", host, port, path, contentType, body, headers)
+	return resp, err
+}
+
+func HTTPPostWithHeadersEx(host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
+	return httpRequest("POST", host, port, path, contentType, body, headers)
 }
 
 func HTTPPut(host string, port int, path, contentType string, body []byte) (string, error) {
-	return HTTPPutWithHeaders(host, port, path, contentType, body, nil)
+	_, resp, err := HTTPRequest("PUT", host, port, path, contentType, body, nil)
+	return resp, err
 }
 
 func HTTPPutWithHeaders(host string, port int, path, contentType string, body []byte, headers map[string]string) (string, error) {
-	if port == 443 {
-		buf := make([]byte, 128*1024)
-		extra, release := buildExtraHeaders(headers)
-		defer release()
-		var cType *C.char
-		if contentType != "" {
-			cType = C.CString(contentType)
-			defer C.free(unsafe.Pointer(cType))
-		}
-		var bodyPtr *C.char
-		if len(body) > 0 {
-			bodyPtr = (*C.char)(C.CBytes(body))
-			defer C.free(unsafe.Pointer(bodyPtr))
-		}
-		if C.https_put(C.CString(host), C.int(port), C.CString(path), cType, bodyPtr, C.size_t(len(body)), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) != 0 {
-			return "", errors.New("https put failed")
-		}
-		resp := goStringFromBuffer(buf)
-		resp = extractHTTPBody(strings.TrimSpace(resp))
-		return resp, nil
-	}
-	buf := make([]byte, 128*1024)
-	cHost := C.CString(host)
-	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cHost))
-	defer C.free(unsafe.Pointer(cPath))
-	var cType *C.char
-	if contentType != "" {
-		cType = C.CString(contentType)
-		defer C.free(unsafe.Pointer(cType))
-	}
-	var bodyPtr unsafe.Pointer
-	if len(body) > 0 {
-		bodyPtr = C.CBytes(body)
-		defer C.free(bodyPtr)
-	}
-	extra, release := buildExtraHeaders(headers)
-	defer release()
-	rc := C.http_put(cHost, C.int(port), cPath, cType, (*C.char)(bodyPtr), C.size_t(len(body)), extra, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)))
-	if rc != 0 {
-		return "", errors.New("http put failed")
-	}
-	resp := goStringFromBuffer(buf)
-	resp = extractHTTPBody(strings.TrimSpace(resp))
-	return resp, nil
+	_, resp, err := HTTPRequest("PUT", host, port, path, contentType, body, headers)
+	return resp, err
+}
+
+func HTTPPutWithHeadersEx(host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
+	return httpRequest("PUT", host, port, path, contentType, body, headers)
+}
+
+// HTTPRequest exposes the unified HTTP helper so callers có thể truyền method/path tuỳ ý.
+func HTTPRequest(method, host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
+	return httpRequest(method, host, port, path, contentType, body, headers)
 }
 
 func SendTokenHeaders(c *TCPClient, headers map[string]string) error {
@@ -446,6 +365,25 @@ func goStringFromBuffer(b []byte) string {
 		n++
 	}
 	return string(b[:n])
+}
+
+func parseStatusAndBody(raw string) (int, string) {
+	if strings.HasPrefix(raw, "HTTP/") {
+		lineEnd := strings.Index(raw, "\r\n")
+		if lineEnd == -1 {
+			lineEnd = strings.Index(raw, "\n")
+		}
+		if lineEnd > 0 {
+			fields := strings.Fields(raw[:lineEnd])
+			if len(fields) >= 2 {
+				if code, err := strconv.Atoi(fields[1]); err == nil {
+					return code, extractHTTPBody(raw)
+				}
+			}
+		}
+		return 0, extractHTTPBody(raw)
+	}
+	return 200, raw
 }
 
 // extractHTTPBody returns body if raw is a full HTTP response, otherwise returns raw.

@@ -33,4 +33,6 @@ func Info(v ...interface{})                     { L.Info().Msgf("%v", v...) }
 func Error(v ...interface{})                    { L.Error().Msgf("%v", v...) }
 func Infof(f string, v ...interface{})          { L.Info().Msgf(f, v...) }
 func Errorf(f string, v ...interface{})         { L.Error().Msgf(f, v...) }
+func Warn(v ...interface{})                     { L.Warn().Msgf("%v", v...) }
+func Warnf(f string, v ...interface{})          { L.Warn().Msgf(f, v...) }
 func Sprintf(f string, v ...interface{}) string { return fmt.Sprintf(f, v...) }

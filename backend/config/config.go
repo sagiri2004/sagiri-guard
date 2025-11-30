@@ -110,7 +110,7 @@ func Load(path string) (*Config, error) {
 		cfg.JWT.Issuer = "sagiri-guard"
 	}
 	cfg.JWT.ExpMin = v.GetInt("backend.jwt.exp_min")
-	if cfg.JWT.ExpMin == 0 {
+	if cfg.JWT.ExpMin <= 0 {
 		cfg.JWT.ExpMin = 60
 	}
 	return cfg, nil

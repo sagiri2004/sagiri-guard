@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/state"
@@ -248,43 +246,33 @@ func writeAll(client *network.TCPClient, data []byte) error {
 }
 
 func callBackupAPI(host string, port int, path string, payload []byte, headers map[string]string) ([]byte, error) {
-	baseHost := host
-	scheme := "http"
+	baseHost := strings.TrimSpace(host)
 	if strings.HasPrefix(baseHost, "http://") {
 		baseHost = strings.TrimPrefix(baseHost, "http://")
 	} else if strings.HasPrefix(baseHost, "https://") {
-		baseHost = strings.TrimPrefix(baseHost, "https://")
-		scheme = "https"
+		return nil, fmt.Errorf("https scheme is not supported by the agent transport")
 	}
-	if port == 443 {
-		scheme = "https"
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
 	}
-	url := fmt.Sprintf("%s://%s:%d%s", scheme, baseHost, port, path)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+
+	reqHeaders := make(map[string]string, len(headers)+2)
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		reqHeaders[k] = v
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	reqHeaders["Content-Type"] = "application/json"
+	reqHeaders["Accept"] = "application/json"
+
+	status, body, err := network.HTTPRequest("POST", baseHost, port, path, "application/json", payload, reqHeaders)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		snippet := strings.TrimSpace(string(respBody))
+	if status >= 300 {
+		snippet := strings.TrimSpace(body)
 		if snippet == "" {
-			snippet = resp.Status
+			snippet = fmt.Sprintf("status %d", status)
 		}
-		return nil, fmt.Errorf("backup endpoint %s failed: %s (status %d)", path, snippet, resp.StatusCode)
+		return nil, fmt.Errorf("backup endpoint %s failed: %s (status %d)", path, snippet, status)
 	}
-	return respBody, nil
+	return []byte(body), nil
 }

@@ -7,13 +7,13 @@ import (
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/logger"
-	"sagiri-guard/agent/internal/osquery"
 	"sagiri-guard/agent/internal/privilege"
 	"sagiri-guard/agent/internal/service"
 	"sagiri-guard/agent/internal/socket"
 	"sagiri-guard/agent/internal/state"
 	"sagiri-guard/backend/global"
 	"sagiri-guard/network"
+	"strings"
 	"time"
 )
 
@@ -55,34 +55,38 @@ func main() {
 		}
 	}
 
-	// Prompt login if no token
-	token, err := auth.LoadToken()
-	if err != nil || token == "" {
-		u, p, perr := auth.PromptCredentials()
-		if perr != nil {
-			logger.Error("Thiếu thông tin đăng nhập")
-			return
-		}
-		token, err = service.Login(u, p)
-		if err != nil {
-			logger.Error("Đăng nhập thất bại:", err)
-			return
-		}
+	token, err := loadOrPromptToken()
+	if err != nil {
+		logger.Error("Thiếu thông tin đăng nhập:", err)
+		return
 	}
 	auth.SetCurrentToken(token)
 	state.SetToken(token)
 
-	// determine device id
-	if si, _, err := osquery.Collect(); err == nil && si.UUID != "" {
-		state.SetDeviceID(si.UUID)
+	var uuid string
+	for {
+		uuid, err = service.BootstrapDevice(token)
+		if err == service.ErrUnauthorized {
+			logger.Warn("Token hiện tại không hợp lệ, yêu cầu đăng nhập lại")
+			if clearErr := auth.ClearToken(); clearErr != nil {
+				logger.Warn("Không thể xoá token cũ: %v", clearErr)
+			}
+			token, err = promptLogin()
+			if err != nil {
+				logger.Error("Đăng nhập thất bại:", err)
+				return
+			}
+			auth.SetCurrentToken(token)
+			state.SetToken(token)
+			continue
+		}
+		if err != nil {
+			logger.Error("Khởi tạo thiết bị thất bại:", err)
+			return
+		}
+		break
 	}
-
-	// Bootstrap device
-	uuid, derr := service.BootstrapDevice(token)
-	if derr != nil {
-		logger.Error("Khởi tạo thiết bị thất bại:", derr)
-		return
-	}
+	state.SetDeviceID(uuid)
 
 	_ = cfgPath // viper reads from default config path set in Init()
 
@@ -170,4 +174,19 @@ func runAgentClientWithConfig(host string, port int, headers map[string]string, 
 			time.Sleep(2 * time.Second) // Ngắn delay trước khi retry
 		}
 	}
+}
+
+func loadOrPromptToken() (string, error) {
+	if existing, err := auth.LoadToken(); err == nil && strings.TrimSpace(existing) != "" {
+		return strings.TrimSpace(existing), nil
+	}
+	return promptLogin()
+}
+
+func promptLogin() (string, error) {
+	u, p, err := auth.PromptCredentials()
+	if err != nil {
+		return "", err
+	}
+	return service.Login(u, p)
 }

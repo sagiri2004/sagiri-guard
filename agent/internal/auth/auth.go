@@ -68,3 +68,11 @@ func LoadToken() (string, error) {
 	}
 	return string(b), nil
 }
+
+func ClearToken() error {
+	path := config.TokenFilePath()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}

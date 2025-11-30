@@ -1,125 +1,403 @@
+//go:build windows
+
 package monitor
 
 import (
+	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sagiri-guard/agent/internal/logger"
+	"sync"
 	"time"
+	"unicode/utf16"
+	"unsafe"
 
-	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sys/windows"
 )
 
-type FileMonitor struct {
-	watcher *fsnotify.Watcher
-	paths   []string
+// ActionType mô tả các sự kiện nghiệp vụ cấp cao mà backend quan tâm.
+type ActionType string
+
+const (
+	ActionCreate  ActionType = "create"
+	ActionModify  ActionType = "modify"
+	ActionDelete  ActionType = "delete"
+	ActionRename  ActionType = "rename"
+	ActionMove    ActionType = "move"
+	ActionMoveOut ActionType = "move_out"
+)
+
+// FileEvent biểu diễn sự kiện nghiệp vụ đã được gom/chuẩn hóa.
+type FileEvent struct {
+	Action    ActionType
+	Path      string
+	OldPath   string
+	Timestamp time.Time
 }
 
-func NewFileMonitor(paths []string) (*FileMonitor, error) {
-	logger.Infof("Creating file monitor for paths: %v", paths)
+type FileMonitor struct {
+	targets []watchTarget
+	stop    chan struct{}
+	wg      sync.WaitGroup
+	once    sync.Once
+}
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		logger.Errorf("Failed to create file watcher: %v", err)
-		return nil, err
+type watchTarget struct {
+	path   string
+	handle windows.Handle
+}
+
+type pendingRename struct {
+	path string
+	when time.Time
+}
+
+const (
+	eventBufferSize = 64 * 1024
+	renamePairTTL   = 2 * time.Second
+	eventQueueSize  = 128
+)
+
+const changeMask = windows.FILE_NOTIFY_CHANGE_FILE_NAME |
+	windows.FILE_NOTIFY_CHANGE_DIR_NAME |
+	windows.FILE_NOTIFY_CHANGE_ATTRIBUTES |
+	windows.FILE_NOTIFY_CHANGE_SIZE |
+	windows.FILE_NOTIFY_CHANGE_LAST_WRITE |
+	windows.FILE_NOTIFY_CHANGE_CREATION |
+	windows.FILE_NOTIFY_CHANGE_SECURITY
+
+const (
+	fileActionAdded          = 0x00000001
+	fileActionRemoved        = 0x00000002
+	fileActionModified       = 0x00000003
+	fileActionRenamedOld     = 0x00000004
+	fileActionRenamedNew     = 0x00000005
+	fileActionAddedStream    = 0x00000006
+	fileActionRemovedStream  = 0x00000007
+	fileActionModifiedStream = 0x00000008
+)
+
+// NewFileMonitor mở handle trực tiếp tới từng thư mục cần giám sát và chuẩn bị watcher.
+func NewFileMonitor(paths []string) (*FileMonitor, error) {
+	logger.Infof("Creating Windows file monitor for paths: %v", paths)
+
+	seen := make(map[string]struct{})
+	targets := make([]watchTarget, 0, len(paths))
+
+	for _, raw := range paths {
+		abs, err := filepath.Abs(raw)
+		if err != nil {
+			logger.Errorf("Failed to resolve %s: %v", raw, err)
+			continue
+		}
+
+		info, err := os.Stat(abs)
+		if err != nil {
+			logger.Errorf("Invalid path %s: %v", abs, err)
+			continue
+		}
+
+		dir := abs
+		if !info.IsDir() {
+			dir = filepath.Dir(abs)
+		}
+		dir = filepath.Clean(dir)
+
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+
+		// Check if directory exists and is accessible
+		if _, err := os.Stat(dir); err != nil {
+			logger.Errorf("Directory %s does not exist or is not accessible: %v (skipping)", dir, err)
+			continue
+		}
+
+		// Try to open directory to verify access
+		testFile, err := os.Open(dir)
+		if err != nil {
+			logger.Errorf("Cannot access directory %s: %v (skipping)", dir, err)
+			continue
+		}
+		testFile.Close()
+
+		handle, err := openDirectoryHandle(dir)
+		if err != nil {
+			logger.Errorf("Failed to open directory handle for %s: %v (skipping)", dir, err)
+			continue
+		}
+
+		// Verify handle is valid
+		if handle == 0 || handle == windows.InvalidHandle {
+			logger.Errorf("Invalid handle returned for %s (skipping)", dir)
+			continue
+		}
+
+		logger.Infof("Watching path: %s", dir)
+		targets = append(targets, watchTarget{path: dir, handle: handle})
+		seen[dir] = struct{}{}
 	}
 
-	for _, path := range paths {
-		if _, err := os.Stat(path); err != nil {
-			logger.Errorf("Invalid path %s: %v", path, err)
-			continue
-		}
-
-		if err := watcher.Add(path); err != nil {
-			logger.Errorf("Failed to add path to watcher: %v", err)
-			continue
-		}
-		logger.Infof("Watching path: %s", filepath.Clean(path))
+	if len(targets) == 0 {
+		return nil, errors.New("file monitor: no valid directories to watch")
 	}
 
 	return &FileMonitor{
-		paths:   paths,
-		watcher: watcher,
+		targets: targets,
+		stop:    make(chan struct{}),
 	}, nil
 }
 
-// MonitorFiles khởi động goroutine giám sát và trả về một channel (chỉ-đọc)
-// nơi các sự kiện "ổn định" (đã qua debouncing) sẽ được gửi đến.
-func (f *FileMonitor) MonitorFiles() <-chan fsnotify.Event {
+// MonitorFiles khởi động các goroutine đọc ReadDirectoryChangesW và trả ra kênh FileEvent
+// đã được chuẩn hóa theo nghiệp vụ.
+func (f *FileMonitor) MonitorFiles() <-chan FileEvent {
+	out := make(chan FileEvent, eventQueueSize)
 
-	// Tạo một channel có buffer (kích thước 10)
-	// Dùng buffer để goroutine không bị block nếu consumer xử lý chậm
-	stableEvents := make(chan fsnotify.Event, 10)
+	for _, target := range f.targets {
+		f.wg.Add(1)
+		go f.streamDirectory(target, out)
+	}
 
 	go func() {
-		// Đảm bảo channel được đóng khi goroutine thoát
-		// để báo hiệu cho consumer biết là đã dừng.
-		defer close(stableEvents)
-
-		var (
-			timer     = time.NewTimer(time.Millisecond)
-			lastEvent fsnotify.Event
-			hasEvent  bool
-		)
-
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-
-		for {
-			select {
-			case <-timer.C:
-				if !hasEvent {
-					continue
-				}
-
-				// Gửi sự kiện ổn định ra channel
-				// Dùng select-default để tránh bị block nếu buffer đầy
-				select {
-				case stableEvents <- lastEvent:
-				default:
-				}
-
-				hasEvent = false
-
-			case event, ok := <-f.watcher.Events:
-				if !ok {
-					return
-				}
-				lastEvent = event
-				hasEvent = true
-
-				// Xả timer cũ
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				// Reset (nhấn "snooze") timer
-				timer.Reset(100 * time.Millisecond)
-
-			// TRƯỜNG HỢP 3: Lỗi
-			case err, ok := <-f.watcher.Errors:
-				if !ok {
-					return
-				}
-				logger.Errorf("[Monitor] File watcher error: %v", err)
-			}
-		}
+		f.wg.Wait()
+		close(out)
 	}()
 
-	// Trả về channel ngay lập tức
-	return stableEvents
+	return out
 }
 
-// Close ra lệnh cho FileMonitor dừng giám sát.
-// Nó sẽ đóng watcher, làm goroutine thoát và đóng channel đã trả về.
+func (f *FileMonitor) streamDirectory(target watchTarget, out chan<- FileEvent) {
+	defer f.wg.Done()
+
+	// Allocate buffer once and reuse it to avoid GC issues
+	buffer := make([]byte, eventBufferSize)
+	var renameQueue []pendingRename
+	retryCount := 0
+	maxRetries := 5
+
+	for {
+		select {
+		case <-f.stop:
+			return
+		default:
+		}
+
+		// Verify handle is still valid before calling
+		if target.handle == 0 || target.handle == windows.InvalidHandle {
+			logger.Errorf("Invalid handle for %s, stopping watch", target.path)
+			return
+		}
+
+		var bytesRead uint32
+		// Pin buffer pointer to prevent GC from moving it
+		bufPtr := unsafe.Pointer(&buffer[0])
+		runtime.KeepAlive(buffer)
+		err := windows.ReadDirectoryChanges(
+			target.handle,
+			(*byte)(bufPtr),
+			uint32(len(buffer)),
+			true,
+			changeMask,
+			&bytesRead,
+			nil,
+			0,
+		)
+		// Keep buffer alive after syscall
+		runtime.KeepAlive(buffer)
+		runtime.KeepAlive(bufPtr)
+		if err != nil {
+			if isTerminalWatcherErr(err) {
+				return
+			}
+			// Check if handle is still valid
+			if err == windows.ERROR_INVALID_HANDLE || err == windows.ERROR_INVALID_PARAMETER {
+				logger.Errorf("ReadDirectoryChangesW failed for %s: handle invalid, stopping watch", target.path)
+				return
+			}
+			retryCount++
+			if retryCount >= maxRetries {
+				logger.Errorf("ReadDirectoryChangesW failed for %s after %d retries: %v (stopping watch)", target.path, maxRetries, err)
+				return
+			}
+			// For other errors, log and retry with backoff
+			logger.Errorf("ReadDirectoryChangesW failed for %s: %v (retry %d/%d)", target.path, err, retryCount, maxRetries)
+			time.Sleep(1 * time.Second) // Increase backoff time
+			continue
+		}
+
+		// Reset retry count on success
+		retryCount = 0
+
+		if bytesRead == 0 {
+			continue
+		}
+
+		data := buffer[:bytesRead]
+		offset := 0
+
+		for {
+			if len(data[offset:]) < 12 {
+				break
+			}
+
+			next := binary.LittleEndian.Uint32(data[offset:])
+			action := binary.LittleEndian.Uint32(data[offset+4:])
+			nameLen := binary.LittleEndian.Uint32(data[offset+8:])
+			end := offset + 12 + int(nameLen)
+			if end > len(data) {
+				break
+			}
+
+			name := decodeUTF16(data[offset+12 : end])
+			fullPath := filepath.Clean(filepath.Join(target.path, name))
+			ts := time.Now()
+
+			renameQueue = flushExpiredRenames(renameQueue, ts, out)
+			renameQueue = dispatchAction(action, fullPath, ts, renameQueue, out)
+
+			if next == 0 {
+				break
+			}
+			offset += int(next)
+		}
+	}
+}
+
+func dispatchAction(action uint32, fullPath string, ts time.Time, queue []pendingRename, out chan<- FileEvent) []pendingRename {
+	switch action {
+	case fileActionAdded:
+		emitEvent(out, FileEvent{Action: ActionCreate, Path: fullPath, Timestamp: ts})
+	case fileActionRemoved:
+		emitEvent(out, FileEvent{Action: ActionDelete, Path: fullPath, Timestamp: ts})
+	case fileActionModified, fileActionAddedStream, fileActionRemovedStream, fileActionModifiedStream:
+		emitEvent(out, FileEvent{Action: ActionModify, Path: fullPath, Timestamp: ts})
+	case fileActionRenamedOld:
+		queue = append(queue, pendingRename{path: fullPath, when: ts})
+	case fileActionRenamedNew:
+		if len(queue) == 0 {
+			emitEvent(out, FileEvent{Action: ActionCreate, Path: fullPath, Timestamp: ts})
+			return queue
+		}
+		old := queue[0]
+		queue = queue[1:]
+		actionType := ActionRename
+		if filepath.Dir(old.path) != filepath.Dir(fullPath) {
+			actionType = ActionMove
+		}
+		emitEvent(out, FileEvent{
+			Action:    actionType,
+			Path:      fullPath,
+			OldPath:   old.path,
+			Timestamp: ts,
+		})
+	default:
+		emitEvent(out, FileEvent{Action: ActionModify, Path: fullPath, Timestamp: ts})
+	}
+
+	return queue
+}
+
+func flushExpiredRenames(queue []pendingRename, now time.Time, out chan<- FileEvent) []pendingRename {
+	if len(queue) == 0 {
+		return queue
+	}
+
+	index := 0
+	for index < len(queue) && now.Sub(queue[index].when) > renamePairTTL {
+		emitEvent(out, FileEvent{
+			Action:    ActionMoveOut,
+			Path:      queue[index].path,
+			OldPath:   queue[index].path,
+			Timestamp: now,
+		})
+		index++
+	}
+
+	return queue[index:]
+}
+
+func emitEvent(out chan<- FileEvent, evt FileEvent) {
+	select {
+	case out <- evt:
+	default:
+		// Nếu consumer bị nghẽn quá lâu, bỏ block để tránh đứng watcher;
+		// log để còn truy vết.
+		logger.Errorf("File monitor backpressure, dropping event %+v", evt)
+	}
+}
+
+func decodeUTF16(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	if len(b)%2 != 0 {
+		b = b[:len(b)-1]
+	}
+
+	u16 := make([]uint16, len(b)/2)
+	for i := 0; i < len(u16); i++ {
+		u16[i] = binary.LittleEndian.Uint16(b[i*2:])
+	}
+
+	return string(utf16.Decode(u16))
+}
+
+func openDirectoryHandle(path string) (windows.Handle, error) {
+	ptr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+
+	handle, err := windows.CreateFile(
+		ptr,
+		windows.FILE_LIST_DIRECTORY,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS,
+		0,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return handle, nil
+}
+
+func isTerminalWatcherErr(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var errno windows.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case windows.ERROR_OPERATION_ABORTED, windows.ERROR_INVALID_HANDLE:
+			return true
+		}
+		// Check for memory access errors
+		if errno == 0xC0000005 { // STATUS_ACCESS_VIOLATION
+			return true
+		}
+	}
+
+	return false
+}
+
+// Close giải phóng mọi handle và yêu cầu toàn bộ goroutine dừng lại.
 func (f *FileMonitor) Close() error {
-	logger.Infof("[Monitor] Close() called. Shutting down watcher.")
-	// Đóng watcher sẽ làm cho các kênh .Events và .Errors bị đóng,
-	// khiến goroutine thoát ra ở mệnh đề 'if !ok'.
-	return f.watcher.Close()
+	var closeErr error
+	f.once.Do(func() {
+		close(f.stop)
+		for _, target := range f.targets {
+			if target.handle != 0 {
+				if err := windows.CloseHandle(target.handle); err != nil && closeErr == nil {
+					closeErr = err
+				}
+			}
+		}
+		f.wg.Wait()
+	})
+	return closeErr
 }

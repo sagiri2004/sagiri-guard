@@ -48,28 +48,5 @@ int tcp_close(SOCKET fd);
 int http_request(const char* host, int port, const char* method, const char* path,
                  const char* content_type, const char* body, size_t body_len,
                  const char* extra_headers, char* response, size_t response_len);
-int http_get(const char* host, int port, const char* path,
-             const char* extra_headers, char* response, size_t response_len);
-int http_post(const char* host, int port, const char* path,
-              const char* content_type, const char* body, size_t body_len,
-              const char* extra_headers, char* response, size_t response_len);
-int http_put(const char* host, int port, const char* path,
-             const char* content_type, const char* body, size_t body_len,
-             const char* extra_headers, char* response, size_t response_len);
-int http_delete(const char* host, int port, const char* path,
-                const char* extra_headers, char* response, size_t response_len);
-// http_post_file removed (unused)
-
-// HTTPS (TLS) Helpers implemented via WinHTTP
-int https_get(const char* host, int port, const char* path,
-              const char* extra_headers, char* response, size_t response_len);
-int https_post(const char* host, int port, const char* path,
-               const char* content_type, const char* body, size_t body_len,
-               const char* extra_headers, char* response, size_t response_len);
-int https_put(const char* host, int port, const char* path,
-              const char* content_type, const char* body, size_t body_len,
-              const char* extra_headers, char* response, size_t response_len);
-int https_delete(const char* host, int port, const char* path,
-                 const char* extra_headers, char* response, size_t response_len);
 
 #endif
