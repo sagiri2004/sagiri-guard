@@ -44,7 +44,10 @@ func main() {
 		logger.Error("Không thể mở SQLite:", dberr)
 		return
 	}
-	_ = adb.AutoMigrate(&db.Token{})
+	if err := adb.AutoMigrate(&db.Token{}, &db.MonitoredFile{}); err != nil {
+		logger.Error("Không thể migrate SQLite:", err)
+		return
+	}
 
 	// Elevate on Windows (optional)
 	if *elevate && !privilege.IsElevated() {
@@ -91,6 +94,9 @@ func main() {
 	_ = cfgPath // viper reads from default config path set in Init()
 
 	fmt.Printf("Agent sẽ retry tối đa %d lần với delay cơ bản %v\n", *maxRetries, *retryDelay)
+
+	// start directory tree sync loop (agent.db -> backend)
+	service.StartFileTreeSyncLoop(token, uuid)
 
 	// use TCP from config
 	addr := cfgVals

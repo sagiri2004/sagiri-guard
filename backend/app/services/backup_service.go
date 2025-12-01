@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sagiri-guard/backend/app/dto"
+	"sagiri-guard/backend/app/models"
+	"sagiri-guard/backend/app/repo"
 	"sagiri-guard/backend/config"
 	"sync"
 	"time"
@@ -23,6 +25,7 @@ type BackupSession struct {
 	ID        string
 	Token     string
 	DeviceID  string
+	LogicalPath string
 	FileName  string
 	FileSize  int64
 	Checksum  string
@@ -42,9 +45,10 @@ type BackupService struct {
 	tcpPort    int
 	sessions   map[string]*BackupSession
 	mu         sync.RWMutex
+	versions   *repo.BackupVersionRepository
 }
 
-func NewBackupService(cfg *config.Config) (*BackupService, error) {
+func NewBackupService(cfg *config.Config, versions *repo.BackupVersionRepository) (*BackupService, error) {
 	storage := cfg.Backup.StoragePath
 	if storage == "" {
 		storage = "backups"
@@ -70,6 +74,7 @@ func NewBackupService(cfg *config.Config) (*BackupService, error) {
 		tcpHost:    host,
 		tcpPort:    port,
 		sessions:   make(map[string]*BackupSession),
+		versions:   versions,
 	}, nil
 }
 
@@ -85,7 +90,12 @@ func (s *BackupService) PrepareUpload(deviceID string, req dto.BackupUploadInitR
 		return nil, errors.New("invalid file metadata")
 	}
 	safeName := filepath.Base(req.FileName)
-	finalPath := filepath.Join(s.storageDir, deviceID, safeName)
+	logicalPath := req.LogicalPath
+	if logicalPath == "" {
+		logicalPath = safeName
+	}
+	storedName := fmt.Sprintf("%d_%s", time.Now().Unix(), safeName)
+	finalPath := filepath.Join(s.storageDir, deviceID, storedName)
 	tempPath := finalPath + ".part"
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir device dir: %w", err)
@@ -106,19 +116,20 @@ func (s *BackupService) PrepareUpload(deviceID string, req dto.BackupUploadInitR
 		offset = req.FileSize
 	}
 	session := &BackupSession{
-		ID:        newID("up"),
-		Token:     newToken(),
-		DeviceID:  deviceID,
-		FileName:  safeName,
-		FileSize:  req.FileSize,
-		Checksum:  req.Checksum,
-		Direction: dto.DirectionUpload,
-		Status:    dto.SessionActive,
-		TempPath:  tempPath,
-		FinalPath: finalPath,
-		BytesDone: offset,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:          newID("up"),
+		Token:       newToken(),
+		DeviceID:    deviceID,
+		LogicalPath: logicalPath,
+		FileName:    safeName,
+		FileSize:    req.FileSize,
+		Checksum:    req.Checksum,
+		Direction:   dto.DirectionUpload,
+		Status:      dto.SessionActive,
+		TempPath:    tempPath,
+		FinalPath:   finalPath,
+		BytesDone:   offset,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	s.mu.Lock()
 	s.sessions[session.ID] = session
@@ -234,6 +245,26 @@ func (s *BackupService) FinalizeUpload(id string) error {
 	sess.Status = dto.SessionCompleted
 	sess.BytesDone = sess.FileSize
 	sess.UpdatedAt = time.Now()
+
+	// Ghi lại version mới cho file này
+	if s.versions != nil && sess.LogicalPath != "" {
+		nextVer, err := s.versions.NextVersion(sess.DeviceID, sess.LogicalPath)
+		if err != nil {
+			return fmt.Errorf("compute next version: %w", err)
+		}
+		v := &models.BackupFileVersion{
+			DeviceID:    sess.DeviceID,
+			LogicalPath: sess.LogicalPath,
+			FileName:    sess.FileName,
+			StoredName:  filepath.Base(sess.FinalPath),
+			Version:     nextVer,
+			Size:        sess.FileSize,
+		}
+		if err := s.versions.Create(v); err != nil {
+			return fmt.Errorf("store backup version: %w", err)
+		}
+	}
+
 	return nil
 }
 

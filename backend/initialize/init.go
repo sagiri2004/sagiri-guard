@@ -30,6 +30,8 @@ type App struct {
 	Users     *services.UserService
 	DeviceSvc *services.DeviceService
 	Backup    *controllers.BackupController
+	FileTree  *controllers.FileTreeController
+	Content   *controllers.ContentTypeController
 }
 
 func Build(configPath string) (*App, error) {
@@ -48,7 +50,16 @@ func Build(configPath string) (*App, error) {
 	global.Mdb = gdb
 
 	// Migrate
-	if err := gdb.AutoMigrate(&models.User{}, &models.Device{}, &models.AgentLog{}); err != nil {
+	if err := gdb.AutoMigrate(
+		&models.User{},
+		&models.Device{},
+		&models.AgentLog{},
+		&models.ContentType{},
+		&models.FileNode{},
+		&models.FolderNode{},
+		&models.Item{},
+		&models.ItemContentTypeLink{},
+	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
@@ -56,10 +67,16 @@ func Build(configPath string) (*App, error) {
 	userRepo := repo.NewUserRepository(gdb)
 	deviceRepo := repo.NewDeviceRepository(gdb)
 	agentLogRepo := repo.NewAgentLogRepository(gdb)
+	fileTreeRepo := repo.NewFileTreeRepository(gdb)
+	contentTypeRepo := repo.NewContentTypeRepository(gdb)
+	backupVersionRepo := repo.NewBackupVersionRepository(gdb)
+
 	userSvc := services.NewUserService(userRepo)
 	deviceSvc := services.NewDeviceService(deviceRepo)
 	agentLogSvc := services.NewAgentLogService(agentLogRepo)
-	backupSvc, err := services.NewBackupService(cfg)
+	contentTypeSvc := services.NewContentTypeService(contentTypeRepo)
+	fileTreeSvc := services.NewFileTreeService(fileTreeRepo, contentTypeRepo)
+	backupSvc, err := services.NewBackupService(cfg, backupVersionRepo)
 	if err != nil {
 		return nil, fmt.Errorf("init backup service: %w", err)
 	}
@@ -82,12 +99,29 @@ func Build(configPath string) (*App, error) {
 	deviceCtrl := controllers.NewDeviceController(deviceSvc)
 	agentLogCtrl := controllers.NewAgentLogController(agentLogSvc)
 	backupCtrl := controllers.NewBackupController(backupSvc)
+	adminBackupCtrl := controllers.NewAdminBackupController(backupVersionRepo, hub)
+	fileTreeCtrl := controllers.NewFileTreeController(fileTreeSvc)
+	contentTypeCtrl := controllers.NewContentTypeController(contentTypeSvc)
 
 	// Router
 	cmdCtrl := controllers.NewCommandController(hub)
-	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, backupCtrl, agentLogCtrl, mw)
+	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, backupCtrl, agentLogCtrl, fileTreeCtrl, contentTypeCtrl, adminBackupCtrl, mw)
 	// Wrap with logging middleware
 	h = middleware.Logging(h)
 
-	return &App{Cfg: *cfg, DB: gdb, Router: h, HTTP: httpCtrl, Auth: authCtrl, Admin: adminCtrl, Devices: deviceCtrl, Socket: socketCtrl, Users: userSvc, DeviceSvc: deviceSvc, Backup: backupCtrl}, nil
+	return &App{
+		Cfg:       *cfg,
+		DB:        gdb,
+		Router:    h,
+		HTTP:      httpCtrl,
+		Auth:      authCtrl,
+		Admin:     adminCtrl,
+		Devices:   deviceCtrl,
+		Socket:    socketCtrl,
+		Users:     userSvc,
+		DeviceSvc: deviceSvc,
+		Backup:    backupCtrl,
+		FileTree:  fileTreeCtrl,
+		Content:   contentTypeCtrl,
+	}, nil
 }

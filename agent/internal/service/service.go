@@ -12,6 +12,7 @@ import (
 	"sagiri-guard/agent/internal/auth"
 	"sagiri-guard/agent/internal/backup"
 	"sagiri-guard/agent/internal/config"
+	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/device"
 	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/monitor"
@@ -183,5 +184,20 @@ func backupFile(path string) error {
 	if err != nil {
 		return err
 	}
-	return backup.UploadFile(session, path)
+	if err := backup.UploadFile(session, path); err != nil {
+		return err
+	}
+
+	// Mark file as backed up in local DB (for sync/restore semantics).
+	if adb := db.Get(); adb != nil {
+		now := time.Now()
+		if err := adb.Model(&db.MonitoredFile{}).
+			Where("path = ?", path).
+			Updates(map[string]any{
+				"last_backup_at": now,
+			}).Error; err != nil {
+			logger.Errorf("failed to update last_backup_at for %s: %v", path, err)
+		}
+	}
+	return nil
 }

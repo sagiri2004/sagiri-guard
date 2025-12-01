@@ -29,9 +29,10 @@ type Session struct {
 }
 
 type UploadInitRequest struct {
-	FileName string `json:"file_name"`
-	FileSize int64  `json:"file_size"`
-	Checksum string `json:"checksum,omitempty"`
+	FileName    string `json:"file_name"`
+	FileSize    int64  `json:"file_size"`
+	Checksum    string `json:"checksum,omitempty"`
+	LogicalPath string `json:"logical_path,omitempty"`
 }
 
 type DownloadInitRequest struct {
@@ -43,7 +44,11 @@ func InitUpload(host string, port int, token string, filePath string) (*Session,
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
-	req := UploadInitRequest{FileName: filepath.Base(filePath), FileSize: info.Size()}
+	req := UploadInitRequest{
+		FileName:    filepath.Base(filePath),
+		FileSize:    info.Size(),
+		LogicalPath: filePath,
+	}
 	body, _ := json.Marshal(req)
 	resp, err := callBackupAPI(host, port, "/backup/upload/init", body, authHeaders(token))
 	if err != nil {

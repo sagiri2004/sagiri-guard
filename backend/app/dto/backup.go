@@ -17,9 +17,10 @@ const (
 )
 
 type BackupUploadInitRequest struct {
-	FileName string `json:"file_name"`
-	FileSize int64  `json:"file_size"`
-	Checksum string `json:"checksum,omitempty"`
+	FileName    string `json:"file_name"`
+	FileSize    int64  `json:"file_size"`
+	Checksum    string `json:"checksum,omitempty"`
+	LogicalPath string `json:"logical_path,omitempty"`
 }
 
 type BackupDownloadInitRequest struct {

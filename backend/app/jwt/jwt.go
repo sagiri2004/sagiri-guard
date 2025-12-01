@@ -22,11 +22,7 @@ type Signer struct {
 
 func (s *Signer) Sign(userID uint, username, role, deviceID string) (string, error) {
 	now := time.Now()
-	expMinutes := s.ExpMin
-	if expMinutes <= 0 {
-		expMinutes = 60
-	}
-	exp := now.Add(time.Duration(expMinutes) * time.Minute)
+	exp := now.Add(time.Duration(s.ExpMin) * time.Minute)
 	claims := Claims{
 		UserID: userID, Username: username, Role: role, DeviceID: deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: s.Issuer, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(exp)},

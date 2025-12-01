@@ -12,7 +12,19 @@ type Routes struct {
 	Admin  http.Handler
 }
 
-func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthController, adminCtrl *controllers.AdminController, deviceCtrl *controllers.DeviceController, cmdCtrl *controllers.CommandController, backupCtrl *controllers.BackupController, agentLogCtrl *controllers.AgentLogController, mw *middleware.Auth) http.Handler {
+func NewRouter(
+	httpCtrl *controllers.HTTPController,
+	authCtrl *controllers.AuthController,
+	adminCtrl *controllers.AdminController,
+	deviceCtrl *controllers.DeviceController,
+	cmdCtrl *controllers.CommandController,
+	backupCtrl *controllers.BackupController,
+	agentLogCtrl *controllers.AgentLogController,
+	fileTreeCtrl *controllers.FileTreeController,
+	contentTypeCtrl *controllers.ContentTypeController,
+	adminBackupCtrl *controllers.AdminBackupController,
+	mw *middleware.Auth,
+) http.Handler {
 	mux := http.NewServeMux()
 	register := func(pattern string, handler http.Handler) {
 		mux.Handle(pattern, middleware.WithRoute(pattern, handler))
@@ -35,6 +47,12 @@ func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthC
 	// command endpoints (admin only)
 	register("/admin/command", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Post)))
 	register("/admin/online", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Online)))
+
+	// backup admin (versions + restore)
+	if adminBackupCtrl != nil {
+		register("/admin/backup/versions", mw.RequireAdmin(http.HandlerFunc(adminBackupCtrl.ListVersions)))
+		register("/admin/backup/restore", mw.RequireAdmin(http.HandlerFunc(adminBackupCtrl.Restore)))
+	}
 
 	// devices
 	register("/devices", mw.RequireAuth(http.HandlerFunc(deviceCtrl.GetByUUID)))
@@ -62,6 +80,16 @@ func NewRouter(httpCtrl *controllers.HTTPController, authCtrl *controllers.AuthC
 	// agent logs
 	register("/agent/log", mw.RequireAuth(http.HandlerFunc(agentLogCtrl.Post)))
 	register("/agent/log/latest", mw.RequireAuth(http.HandlerFunc(agentLogCtrl.GetLatest)))
+
+	// file tree + content types
+	register("/filetree/nodes", mw.RequireAuth(http.HandlerFunc(fileTreeCtrl.List)))
+	register("/filetree/sync", mw.RequireAuth(http.HandlerFunc(fileTreeCtrl.Sync)))
+	register("/filetree/content-types", mw.RequireAuth(http.HandlerFunc(fileTreeCtrl.AssignContentTypes)))
+
+	register("/content-types", mw.RequireAuth(http.HandlerFunc(contentTypeCtrl.List)))
+	register("/content-types/create", mw.RequireAdmin(http.HandlerFunc(contentTypeCtrl.Create)))
+	register("/content-types/update", mw.RequireAdmin(http.HandlerFunc(contentTypeCtrl.Update)))
+	register("/content-types/delete", mw.RequireAdmin(http.HandlerFunc(contentTypeCtrl.Delete)))
 
 	return mux
 }

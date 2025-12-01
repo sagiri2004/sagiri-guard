@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	dbpkg "sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/logger"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"gorm.io/gorm/clause"
 )
 
 // ActionType mô tả các sự kiện nghiệp vụ cấp cao mà backend quan tâm.
@@ -55,7 +57,7 @@ type pendingRename struct {
 }
 
 const (
-	eventBufferSize = 64 * 1024
+	eventBufferSize = 64 * 1024 // 64KB
 	renamePairTTL   = 2 * time.Second
 	eventQueueSize  = 128
 )
@@ -109,13 +111,13 @@ func NewFileMonitor(paths []string) (*FileMonitor, error) {
 			continue
 		}
 
-		// Check if directory exists and is accessible
+		// Kiểm tra thư mục có tồn tại và truy cập được không
 		if _, err := os.Stat(dir); err != nil {
 			logger.Errorf("Directory %s does not exist or is not accessible: %v (skipping)", dir, err)
 			continue
 		}
 
-		// Try to open directory to verify access
+		// Thử mở thư mục để xác minh quyền truy cập
 		testFile, err := os.Open(dir)
 		if err != nil {
 			logger.Errorf("Cannot access directory %s: %v (skipping)", dir, err)
@@ -150,8 +152,7 @@ func NewFileMonitor(paths []string) (*FileMonitor, error) {
 	}, nil
 }
 
-// MonitorFiles khởi động các goroutine đọc ReadDirectoryChangesW và trả ra kênh FileEvent
-// đã được chuẩn hóa theo nghiệp vụ.
+// MonitorFiles khởi động các goroutine
 func (f *FileMonitor) MonitorFiles() <-chan FileEvent {
 	out := make(chan FileEvent, eventQueueSize)
 
@@ -171,11 +172,37 @@ func (f *FileMonitor) MonitorFiles() <-chan FileEvent {
 func (f *FileMonitor) streamDirectory(target watchTarget, out chan<- FileEvent) {
 	defer f.wg.Done()
 
-	// Allocate buffer once and reuse it to avoid GC issues
-	buffer := make([]byte, eventBufferSize)
+	// Khóa OS Thread để đảm bảo tính nhất quán của Thread ID khi gọi syscall (tốt cho debugging)
+	runtime.LockOSThread()
+
+	// FIX QUAN TRỌNG: Sử dụng VirtualAlloc thay vì make([]byte).
+	// Bộ nhớ cấp phát bởi VirtualAlloc nằm ngoài Heap của Go (Off-heap),
+	// do đó Garbage Collector sẽ KHÔNG bao giờ di chuyển nó.
+	// Điều này ngăn chặn lỗi "Invalid access to memory location" khi Debugger can thiệp vào Runtime.
+	const bufSize = eventBufferSize
+	addr, err := windows.VirtualAlloc(
+		0,
+		uintptr(bufSize),
+		windows.MEM_COMMIT|windows.MEM_RESERVE,
+		windows.PAGE_READWRITE,
+	)
+	if err != nil {
+		logger.Errorf("CRITICAL: Failed to allocate memory via VirtualAlloc for %s: %v", target.path, err)
+		return
+	}
+
+	// Đảm bảo giải phóng bộ nhớ khi goroutine thoát
+	defer func() {
+		_ = windows.VirtualFree(addr, 0, windows.MEM_RELEASE)
+	}()
+
+	// Tạo một Go Slice trỏ vào vùng nhớ VirtualAlloc để dễ thao tác
+	// Cú pháp này an toàn từ Go 1.17+
+	buffer := unsafe.Slice((*byte)(unsafe.Pointer(addr)), bufSize)
+
 	var renameQueue []pendingRename
 	retryCount := 0
-	maxRetries := 5
+	maxRetries := 10 // Tăng số lần retry lên
 
 	for {
 		select {
@@ -184,46 +211,43 @@ func (f *FileMonitor) streamDirectory(target watchTarget, out chan<- FileEvent) 
 		default:
 		}
 
-		// Verify handle is still valid before calling
 		if target.handle == 0 || target.handle == windows.InvalidHandle {
 			logger.Errorf("Invalid handle for %s, stopping watch", target.path)
 			return
 		}
 
 		var bytesRead uint32
-		// Pin buffer pointer to prevent GC from moving it
-		bufPtr := unsafe.Pointer(&buffer[0])
-		runtime.KeepAlive(buffer)
+
+		// Gọi ReadDirectoryChangesW với địa chỉ bộ nhớ thô (addr)
+		// Không cần runtime.KeepAlive vì đây là bộ nhớ do OS quản lý trực tiếp.
 		err := windows.ReadDirectoryChanges(
 			target.handle,
-			(*byte)(bufPtr),
-			uint32(len(buffer)),
+			(*byte)(unsafe.Pointer(addr)), // Dùng pointer trực tiếp từ VirtualAlloc
+			uint32(bufSize),
 			true,
 			changeMask,
 			&bytesRead,
 			nil,
 			0,
 		)
-		// Keep buffer alive after syscall
-		runtime.KeepAlive(buffer)
-		runtime.KeepAlive(bufPtr)
+
 		if err != nil {
 			if isTerminalWatcherErr(err) {
 				return
 			}
-			// Check if handle is still valid
 			if err == windows.ERROR_INVALID_HANDLE || err == windows.ERROR_INVALID_PARAMETER {
 				logger.Errorf("ReadDirectoryChangesW failed for %s: handle invalid, stopping watch", target.path)
 				return
 			}
+
 			retryCount++
 			if retryCount >= maxRetries {
 				logger.Errorf("ReadDirectoryChangesW failed for %s after %d retries: %v (stopping watch)", target.path, maxRetries, err)
 				return
 			}
-			// For other errors, log and retry with backoff
+
 			logger.Errorf("ReadDirectoryChangesW failed for %s: %v (retry %d/%d)", target.path, err, retryCount, maxRetries)
-			time.Sleep(1 * time.Second) // Increase backoff time
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
@@ -234,6 +258,7 @@ func (f *FileMonitor) streamDirectory(target watchTarget, out chan<- FileEvent) 
 			continue
 		}
 
+		// Xử lý dữ liệu từ buffer (lúc này buffer đã chứa dữ liệu do Windows ghi vào)
 		data := buffer[:bytesRead]
 		offset := 0
 
@@ -319,6 +344,7 @@ func flushExpiredRenames(queue []pendingRename, now time.Time, out chan<- FileEv
 }
 
 func emitEvent(out chan<- FileEvent, evt FileEvent) {
+	persistMonitoredFile(evt)
 	select {
 	case out <- evt:
 	default:
@@ -350,6 +376,7 @@ func openDirectoryHandle(path string) (windows.Handle, error) {
 		return 0, err
 	}
 
+	// FILE_FLAG_BACKUP_SEMANTICS là cờ bắt buộc để mở Handle cho thư mục
 	handle, err := windows.CreateFile(
 		ptr,
 		windows.FILE_LIST_DIRECTORY,
@@ -376,13 +403,84 @@ func isTerminalWatcherErr(err error) bool {
 		case windows.ERROR_OPERATION_ABORTED, windows.ERROR_INVALID_HANDLE:
 			return true
 		}
-		// Check for memory access errors
-		if errno == 0xC0000005 { // STATUS_ACCESS_VIOLATION
+		// Check for memory access errors (0xC0000005)
+		if errno == 0xC0000005 {
 			return true
 		}
 	}
 
 	return false
+}
+
+func persistMonitoredFile(evt FileEvent) {
+	if evt.Path == "" {
+		return
+	}
+
+	db := dbpkg.Get()
+	if db == nil {
+		return
+	}
+
+	ts := evt.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+
+	changePending := shouldMarkPending(evt.Action)
+	record := dbpkg.MonitoredFile{
+		Path:          evt.Path,
+		LastAction:    string(evt.Action),
+		LastEventAt:   ts,
+		ChangePending: changePending,
+	}
+
+	if err := db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "path"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"last_action":    record.LastAction,
+			"last_event_at":  record.LastEventAt,
+			"change_pending": record.ChangePending,
+		}),
+	}).Create(&record).Error; err != nil {
+		logger.Errorf("Persist file event failed for %s: %v", evt.Path, err)
+	}
+
+	if evt.OldPath != "" && evt.OldPath != evt.Path {
+		persistOldPath(evt.OldPath, ts)
+	}
+}
+
+func persistOldPath(oldPath string, ts time.Time) {
+	db := dbpkg.Get()
+	if db == nil {
+		return
+	}
+	record := dbpkg.MonitoredFile{
+		Path:          oldPath,
+		LastAction:    string(ActionMoveOut),
+		LastEventAt:   ts,
+		ChangePending: false,
+	}
+	if err := db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "path"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"last_action":    record.LastAction,
+			"last_event_at":  record.LastEventAt,
+			"change_pending": record.ChangePending,
+		}),
+	}).Create(&record).Error; err != nil {
+		logger.Errorf("Persist move-out file event failed for %s: %v", oldPath, err)
+	}
+}
+
+func shouldMarkPending(action ActionType) bool {
+	switch action {
+	case ActionDelete, ActionMoveOut:
+		return false
+	default:
+		return true
+	}
 }
 
 // Close giải phóng mọi handle và yêu cầu toàn bộ goroutine dừng lại.
