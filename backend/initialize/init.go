@@ -59,6 +59,8 @@ func Build(configPath string) (*App, error) {
 		&models.FolderNode{},
 		&models.Item{},
 		&models.ItemContentTypeLink{},
+		&models.AgentCommand{},
+		&models.BackupFileVersion{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -70,6 +72,7 @@ func Build(configPath string) (*App, error) {
 	fileTreeRepo := repo.NewFileTreeRepository(gdb)
 	contentTypeRepo := repo.NewContentTypeRepository(gdb)
 	backupVersionRepo := repo.NewBackupVersionRepository(gdb)
+	agentCmdRepo := repo.NewAgentCommandRepository(gdb)
 
 	userSvc := services.NewUserService(userRepo)
 	deviceSvc := services.NewDeviceService(deviceRepo)
@@ -93,7 +96,7 @@ func Build(configPath string) (*App, error) {
 	authCtrl := controllers.NewAuthController(userSvc, signer)
 	authCtrl.Devices = deviceSvc
 	hub := socket.NewHub()
-	socketCtrl := controllers.NewSocketController(hub)
+	socketCtrl := controllers.NewSocketController(hub, agentCmdRepo)
 	mw := &middleware.Auth{Signer: signer}
 	adminCtrl := controllers.NewAdminController(userSvc)
 	deviceCtrl := controllers.NewDeviceController(deviceSvc)
@@ -104,7 +107,7 @@ func Build(configPath string) (*App, error) {
 	contentTypeCtrl := controllers.NewContentTypeController(contentTypeSvc)
 
 	// Router
-	cmdCtrl := controllers.NewCommandController(hub)
+	cmdCtrl := controllers.NewCommandController(hub, agentCmdRepo)
 	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, backupCtrl, agentLogCtrl, fileTreeCtrl, contentTypeCtrl, adminBackupCtrl, mw)
 	// Wrap with logging middleware
 	h = middleware.Logging(h)

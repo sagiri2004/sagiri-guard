@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	"sagiri-guard/backend/global"
 	"sagiri-guard/backend/initialize"
 	"sagiri-guard/backend/server"
 	"sagiri-guard/network"
@@ -15,38 +15,38 @@ func main() {
 	flag.Parse()
 
 	if err := network.Init(); err != nil {
-		fmt.Println("Không thể khởi tạo thư viện mạng:", err)
+		global.Logger.Error().Msgf("Cannot initialize network library: %v", err)
 		return
 	}
 	defer network.Cleanup()
 
 	app, err := initialize.Build(*cfgPath)
 	if err != nil {
-		fmt.Println("Khởi tạo ứng dụng lỗi:", err)
+		global.Logger.Error().Msgf("Application initialization failed: %v", err)
 		return
 	}
 
 	if err := server.StartHTTPServerC(app.Cfg.HTTP.Host, app.Cfg.HTTP.Port, app.Router); err != nil {
-		fmt.Println("Không thể khởi động HTTP server:", err)
+		global.Logger.Error().Msgf("Cannot start HTTP server: %v", err)
 		return
 	}
-	fmt.Printf("HTTP server đang lắng nghe tại %s:%d\n", app.Cfg.HTTP.Host, app.Cfg.HTTP.Port)
+	global.Logger.Info().Msgf("HTTP server is listening on %s:%d...", app.Cfg.HTTP.Host, app.Cfg.HTTP.Port)
 
 	// TCP socket server: chỉ lắng nghe và nhận kết nối từ client
 	go func() {
 		if err := server.StartTCPServer(app.Cfg.TCP.Host, app.Cfg.TCP.Port, app.Socket.HandleClient); err != nil {
-			fmt.Println("TCP server dừng với lỗi:", err)
+			global.Logger.Error().Msgf("TCP server stopped with error: %v", err)
 		}
 	}()
-	fmt.Printf("TCP server đang lắng nghe tại %s:%d\n", app.Cfg.TCP.Host, app.Cfg.TCP.Port)
+	global.Logger.Info().Msgf("TCP server is listening on %s:%d...", app.Cfg.TCP.Host, app.Cfg.TCP.Port)
 
 	if app.Backup != nil {
 		go func() {
 			if err := server.StartTCPServer(app.Cfg.Backup.TCP.Host, app.Cfg.Backup.TCP.Port, app.Backup.HandleTransfer); err != nil {
-				fmt.Println("Backup TCP server dừng với lỗi:", err)
+				global.Logger.Error().Msgf("Backup TCP server stopped with error: %v", err)
 			}
 		}()
-		fmt.Printf("Backup TCP server đang lắng nghe tại %s:%d\n", app.Cfg.Backup.TCP.Host, app.Cfg.Backup.TCP.Port)
+		global.Logger.Info().Msgf("Backup TCP server is listening on %s:%d...", app.Cfg.Backup.TCP.Host, app.Cfg.Backup.TCP.Port)
 	}
 
 	select {}

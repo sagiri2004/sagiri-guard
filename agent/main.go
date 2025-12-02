@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"sagiri-guard/agent/internal/auth"
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/db"
@@ -27,7 +26,7 @@ func main() {
 	flag.Parse()
 
 	if err := network.Init(); err != nil {
-		fmt.Println("Không thể khởi tạo thư viện mạng:", err)
+		logger.Error("Cannot initialize network library:", err)
 		return
 	}
 	defer network.Cleanup()
@@ -41,18 +40,18 @@ func main() {
 	// init local sqlite db
 	adb, dberr := db.Init(cfgVals.DBPath)
 	if dberr != nil {
-		logger.Error("Không thể mở SQLite:", dberr)
+		logger.Error("Cannot open SQLite:", dberr)
 		return
 	}
 	if err := adb.AutoMigrate(&db.Token{}, &db.MonitoredFile{}); err != nil {
-		logger.Error("Không thể migrate SQLite:", err)
+		logger.Error("Cannot migrate SQLite:", err)
 		return
 	}
 
 	// Elevate on Windows (optional)
 	if *elevate && !privilege.IsElevated() {
 		if relaunched, err := privilege.AttemptElevate(); err != nil {
-			logger.Error("Không thể yêu cầu quyền admin:", err)
+			logger.Error("Cannot request admin privileges:", err)
 		} else if relaunched {
 			return
 		}
@@ -60,7 +59,7 @@ func main() {
 
 	token, err := loadOrPromptToken()
 	if err != nil {
-		logger.Error("Thiếu thông tin đăng nhập:", err)
+		logger.Error("Missing login information:", err)
 		return
 	}
 	auth.SetCurrentToken(token)
@@ -70,13 +69,13 @@ func main() {
 	for {
 		uuid, err = service.BootstrapDevice(token)
 		if err == service.ErrUnauthorized {
-			logger.Warn("Token hiện tại không hợp lệ, yêu cầu đăng nhập lại")
+			logger.Warn("Current token is invalid, requesting login again")
 			if clearErr := auth.ClearToken(); clearErr != nil {
-				logger.Warn("Không thể xoá token cũ: %v", clearErr)
+				logger.Warn("Cannot clear old token: %v", clearErr)
 			}
 			token, err = promptLogin()
 			if err != nil {
-				logger.Error("Đăng nhập thất bại:", err)
+				logger.Error("Login failed:", err)
 				return
 			}
 			auth.SetCurrentToken(token)
@@ -84,7 +83,7 @@ func main() {
 			continue
 		}
 		if err != nil {
-			logger.Error("Khởi tạo thiết bị thất bại:", err)
+			logger.Error("Device initialization failed:", err)
 			return
 		}
 		break
@@ -93,7 +92,7 @@ func main() {
 
 	_ = cfgPath // viper reads from default config path set in Init()
 
-	fmt.Printf("Agent sẽ retry tối đa %d lần với delay cơ bản %v\n", *maxRetries, *retryDelay)
+	logger.Infof("Agent will retry up to %d times with a base delay of %v...", *maxRetries, *retryDelay)
 
 	// start directory tree sync loop (agent.db -> backend)
 	service.StartFileTreeSyncLoop(token, uuid)
@@ -138,19 +137,19 @@ func runAgentClientWithConfig(host string, port int, headers map[string]string, 
 	var delay time.Duration = baseDelay
 
 	for {
-		fmt.Printf("Agent đang thử kết nối đến backend %s:%d (lần thử #%d)...\n", host, port, retryCount+1)
+		logger.Infof("Agent is trying to connect to backend %s:%d (attempt #%d)...", host, port, retryCount+1)
 
 		client, err := network.DialTCP(host, port)
 		if err != nil {
 			retryCount++
-			fmt.Printf("Agent không kết nối được tới backend (lần thử #%d): %v\n", retryCount, err)
+			logger.Errorf("Agent cannot connect to backend (attempt #%d): %v", retryCount, err)
 
 			if retryCount >= maxRetries {
-				fmt.Printf("Agent đã thử kết nối %d lần nhưng thất bại. Dừng retry.\n", maxRetries)
+				logger.Errorf("Agent has tried to connect %d times but failed. Stopping retries.", maxRetries)
 				return
 			}
 
-			fmt.Printf("Agent sẽ thử lại sau %v...\n", delay)
+			logger.Infof("Agent will retry in %v...", delay)
 			time.Sleep(delay)
 
 			// Exponential backoff với jitter
@@ -164,20 +163,20 @@ func runAgentClientWithConfig(host string, port int, headers map[string]string, 
 		// Kết nối thành công, reset retry counter
 		retryCount = 0
 		delay = baseDelay
-		fmt.Printf("Agent kết nối tới backend %s:%d thành công!\n", host, port)
+		logger.Infof("Agent connected to backend %s:%d successfully!", host, port)
 
 		// Gửi headers và bắt đầu ping loop
 		if err := network.SendTokenHeaders(client, headers); err != nil {
-			fmt.Println("Agent không gửi được header tới backend:", err)
+			logger.Errorf("Agent cannot send headers to backend: %v", err)
 			client.Close()
 			continue
 		}
 
 		// Read loop until disconnect
 		if err := runReadLoop(client); err != nil {
-			fmt.Printf("Agent ping loop thất bại: %v. Sẽ thử kết nối lại...\n", err)
+			logger.Errorf("Agent ping loop failed: %v. Will retry...", err)
 			client.Close()
-			time.Sleep(2 * time.Second) // Ngắn delay trước khi retry
+			time.Sleep(2 * time.Second) // Short delay before retry
 		}
 	}
 }

@@ -47,6 +47,7 @@ func NewRouter(
 	// command endpoints (admin only)
 	register("/admin/command", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Post)))
 	register("/admin/online", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Online)))
+	register("/admin/command/queue", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Queue)))
 
 	// backup admin (versions + restore)
 	if adminBackupCtrl != nil {
@@ -58,7 +59,6 @@ func NewRouter(
 	register("/devices", mw.RequireAuth(http.HandlerFunc(deviceCtrl.GetByUUID)))
 	register("/devices/register", mw.RequireAuth(http.HandlerFunc(deviceCtrl.RegisterOrUpdate)))
 
-	// backup onedrive (auth required)
 	if backupCtrl != nil {
 		fmt.Println("registering backup routes")
 		backupMux := http.NewServeMux()

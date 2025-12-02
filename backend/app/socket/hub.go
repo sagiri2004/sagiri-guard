@@ -40,6 +40,17 @@ func (h *Hub) IsOnline(deviceID string) bool {
 	return ok
 }
 
+// OnlineDevices trả về danh sách tất cả device đang online.
+func (h *Hub) OnlineDevices() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]string, 0, len(h.byID))
+	for id := range h.byID {
+		out = append(out, id)
+	}
+	return out
+}
+
 func (h *Hub) Send(deviceID string, data []byte) error {
 	h.mu.RLock()
 	cc, ok := h.byID[deviceID]

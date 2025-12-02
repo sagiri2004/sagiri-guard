@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/state"
+	"sagiri-guard/backend/global"
 	"sagiri-guard/network"
 )
 
@@ -144,7 +144,7 @@ func UploadFile(session *Session, filePath string) error {
 	if _, err := client.ReadFull(offsetBuf); err == nil {
 		session.Offset = int64(binary.BigEndian.Uint64(offsetBuf))
 	}
-	logger.Infof("Đã upload xong %s (%d bytes)", session.FileName, session.Offset)
+	global.Logger.Info().Msgf("Uploaded %s (%d bytes)", session.FileName, session.Offset)
 	return nil
 }
 
@@ -221,7 +221,7 @@ func DownloadFile(session *Session, destPath string) error {
 	}
 	session.Offset = startOffset
 	session.FileSize = totalSize
-	logger.Infof("Đã tải về %s (%d/%d bytes)", session.FileName, startOffset, totalSize)
+	global.Logger.Info().Msgf("Downloaded %s (%d/%d bytes)", session.FileName, startOffset, totalSize)
 	return nil
 }
 

@@ -95,11 +95,25 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 			}
 		}
 
-		// build deterministic ID from device + path segments
-		segments := splitSegments(path)
-		itemID := deterministicID(deviceUUID, segments)
+		// Xây dựng đường dẫn logic dựa trên folder được monitor.
+		// Ví dụ: monitor "C:\Users\izumi\Downloads\Demo" => root logic = "Demo",
+		// file "C:\Users\izumi\Downloads\Demo\a\b.txt" => segments = ["Demo","a","b.txt"].
+		logicalSegments := buildLogicalSegments(path)
+		if len(logicalSegments) == 0 {
+			// fallback: dùng full path tách segment như cũ
+			logicalSegments = splitSegments(path)
+		}
+		logicalPath := strings.Join(logicalSegments, "/")
 
-		name := filepath.Base(path)
+		// build deterministic ID từ device + logical path segments
+		itemID := deterministicID(deviceUUID, logicalSegments)
+
+		name := ""
+		if len(logicalSegments) > 0 {
+			name = logicalSegments[len(logicalSegments)-1]
+		} else {
+			name = filepath.Base(path)
+		}
 		ext := ""
 		if isDir {
 			ext = "folder"
@@ -111,8 +125,8 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 
 		changes = append(changes, fileTreeChange{
 			ID:             itemID,
-			OriginPath:     path,
-			CurrentPath:    path,
+			OriginPath:     logicalPath,
+			CurrentPath:    logicalPath,
 			CurrentName:    name,
 			Extension:      ext,
 			Size:           size,
@@ -184,6 +198,57 @@ func collectIDs(rows []db.MonitoredFile) []uint {
 // helpers so this file does not import monitor directly (avoid windows build tags leakage here).
 func monitorActionDelete() string  { return "delete" }
 func monitorActionMoveOut() string { return "move_out" }
+
+// buildLogicalSegments chuyển absolute path thành các segment logic, dựa trên MonitorPaths.
+// Ví dụ: MonitorPaths = ["C:\\Users\\izumi\\Downloads\\Demo"]
+// Path = "C:\\Users\\izumi\\Downloads\\Demo\\folder\\file.txt"
+// => ["Demo", "folder", "file.txt"]
+func buildLogicalSegments(p string) []string {
+	cfg := config.Get()
+	if len(cfg.MonitorPaths) == 0 || strings.TrimSpace(p) == "" {
+		return splitSegments(p)
+	}
+
+	absPath, err := filepath.Abs(p)
+	if err != nil {
+		return splitSegments(p)
+	}
+	absPathLower := strings.ToLower(absPath)
+
+	for _, root := range cfg.MonitorPaths {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		absRoot, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		rootLower := strings.ToLower(absRoot)
+		// match root prefix
+		if absPathLower == rootLower || strings.HasPrefix(absPathLower, rootLower+string(os.PathSeparator)) {
+			rel, err := filepath.Rel(absRoot, absPath)
+			if err != nil {
+				break
+			}
+			var segs []string
+			rootName := filepath.Base(absRoot)
+			if rootName != "" {
+				segs = append(segs, rootName)
+			}
+			if rel != "." {
+				for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+					if trimmed := strings.TrimSpace(part); trimmed != "" {
+						segs = append(segs, trimmed)
+					}
+				}
+			}
+			return segs
+		}
+	}
+
+	// không match monitor root nào -> fallback: full path
+	return splitSegments(p)
+}
 
 // splitSegments normalizes a Windows/Unix path into path segments, matching backend logic.
 func splitSegments(p string) []string {
