@@ -10,8 +10,7 @@ import (
 
 type AppConfig struct {
 	BackendHost  string
-	BackendHTTP  int
-	BackendTCP   int
+	BackendPort  int
 	TokenPath    string
 	LogPath      string
 	OsqueryPath  string
@@ -29,19 +28,27 @@ func Init() AppConfig {
 	v.SetConfigFile("config/config.yaml")
 	v.SetConfigType("yaml")
 
-	// defaults
+	// defaults (single protocol port)
 	v.SetDefault("agent.backend.host", "127.0.0.1")
-	v.SetDefault("agent.backend.http", 9400)
-	v.SetDefault("agent.backend.tcp", 9200)
+	v.SetDefault("agent.backend.port", 9200)
 	v.SetDefault("agent.token_path", defaultToken)
 	v.SetDefault("agent.monitor_paths", []string{})
 	v.SetDefault("agent.db_path", filepath.Join(os.TempDir(), "sagiri-guard", "agent.db"))
 	_ = v.ReadInConfig()
 
+	port := v.GetInt("agent.backend.port")
+	if port == 0 {
+		// backward-compat for legacy keys
+		if p := v.GetInt("agent.backend.tcp"); p != 0 {
+			port = p
+		} else if p := v.GetInt("agent.backend.http"); p != 0 {
+			port = p
+		}
+	}
+
 	cfg = AppConfig{
 		BackendHost:  v.GetString("agent.backend.host"),
-		BackendHTTP:  v.GetInt("agent.backend.http"),
-		BackendTCP:   v.GetInt("agent.backend.tcp"),
+		BackendPort:  port,
 		TokenPath:    v.GetString("agent.token_path"),
 		LogPath:      v.GetString("agent.log_path"),
 		OsqueryPath:  v.GetString("agent.osquery_path"),
@@ -60,6 +67,6 @@ func TokenFilePath() string {
 	return cfg.TokenPath
 }
 
-func BackendHTTP() (string, int) { return cfg.BackendHost, cfg.BackendHTTP }
+func BackendHostPort() (string, int) { return cfg.BackendHost, cfg.BackendPort }
 
-func BackendAddr() string { return fmt.Sprintf("%s:%d", cfg.BackendHost, cfg.BackendTCP) }
+func BackendAddr() string { return fmt.Sprintf("%s:%d", cfg.BackendHost, cfg.BackendPort) }

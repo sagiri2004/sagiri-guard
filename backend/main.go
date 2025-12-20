@@ -26,27 +26,12 @@ func main() {
 		return
 	}
 
-	if err := server.StartHTTPServerC(app.Cfg.HTTP.Host, app.Cfg.HTTP.Port, app.Router); err != nil {
-		global.Logger.Error().Msgf("Cannot start HTTP server: %v", err)
+	// Start protocol server (replaces HTTP + TCP)
+	if err := server.StartProtocolServer(app.Cfg.TCP.Host, app.Cfg.TCP.Port, app.Protocol); err != nil {
+		global.Logger.Error().Msgf("Cannot start protocol server: %v", err)
 		return
 	}
-	global.Logger.Info().Msgf("HTTP server is listening on %s:%d...", app.Cfg.HTTP.Host, app.Cfg.HTTP.Port)
-
-	go func() {
-		if err := server.StartTCPServer(app.Cfg.TCP.Host, app.Cfg.TCP.Port, app.Socket.HandleClient); err != nil {
-			global.Logger.Error().Msgf("TCP server stopped with error: %v", err)
-		}
-	}()
-	global.Logger.Info().Msgf("TCP server is listening on %s:%d...", app.Cfg.TCP.Host, app.Cfg.TCP.Port)
-
-	if app.Backup != nil {
-		go func() {
-			if err := server.StartTCPServer(app.Cfg.Backup.TCP.Host, app.Cfg.Backup.TCP.Port, app.Backup.HandleTransfer); err != nil {
-				global.Logger.Error().Msgf("Backup TCP server stopped with error: %v", err)
-			}
-		}()
-		global.Logger.Info().Msgf("Backup TCP server is listening on %s:%d...", app.Cfg.Backup.TCP.Host, app.Cfg.Backup.TCP.Port)
-	}
+	// global.Logger.Info().Msgf("Protocol server is listening on %s:%d...", app.Cfg.TCP.Host, app.Cfg.TCP.Port)
 
 	select {}
 }

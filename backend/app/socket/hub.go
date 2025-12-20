@@ -61,7 +61,10 @@ func (h *Hub) Send(deviceID string, data []byte) error {
 	}
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	_, err := cc.c.Write(data)
+	// Gửi dưới dạng protocol command frame
+	if err := cc.c.SendCommand(data); err != nil {
+		return err
+	}
 	global.Logger.Info().Str("device", deviceID).Str("data", string(data)).Msg("Sent data to device")
-	return err
+	return nil
 }

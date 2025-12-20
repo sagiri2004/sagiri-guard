@@ -4,7 +4,6 @@ import (
 	"flag"
 	"os"
 	"os/signal"
-	"syscall"
 	"sagiri-guard/agent/internal/auth"
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/db"
@@ -14,9 +13,9 @@ import (
 	"sagiri-guard/agent/internal/service"
 	"sagiri-guard/agent/internal/socket"
 	"sagiri-guard/agent/internal/state"
-	"sagiri-guard/backend/global"
 	"sagiri-guard/network"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -61,29 +60,35 @@ func main() {
 		}
 	}
 
-	token, err := loadOrPromptToken()
+	token, deviceID, err := loadOrPromptToken()
 	if err != nil {
 		logger.Error("Missing login information:", err)
 		return
 	}
 	auth.SetCurrentToken(token)
 	state.SetToken(token)
+	if deviceID != "" {
+		state.SetDeviceID(deviceID)
+	}
 
 	var uuid string
 	for {
-		uuid, err = service.BootstrapDevice(token)
+		uuid, err = service.BootstrapDevice(token, deviceID)
 		if err == service.ErrUnauthorized {
 			logger.Warn("Current token is invalid, requesting login again")
 			if clearErr := auth.ClearToken(); clearErr != nil {
 				logger.Warn("Cannot clear old token: %v", clearErr)
 			}
-			token, err = promptLogin()
+			token, deviceID, err = promptLogin()
 			if err != nil {
 				logger.Error("Login failed:", err)
 				return
 			}
 			auth.SetCurrentToken(token)
 			state.SetToken(token)
+			if deviceID != "" {
+				state.SetDeviceID(deviceID)
+			}
 			continue
 		}
 		if err != nil {
@@ -93,6 +98,7 @@ func main() {
 		break
 	}
 	state.SetDeviceID(uuid)
+	deviceID = uuid
 
 	_ = cfgPath // viper reads from default config path set in Init()
 
@@ -103,13 +109,8 @@ func main() {
 
 	// use TCP from config
 	addr := cfgVals
-	// Start TCP client with headers
-	headers := map[string]string{
-		"Authorization": logger.Sprintf("Bearer %s", token),
-		"X-Device-ID":   uuid,
-	}
 	go func() {
-		runAgentClientWithConfig(addr.BackendHost, addr.BackendTCP, headers, *maxRetries, *retryDelay)
+		runAgentClientWithConfig(addr.BackendHost, addr.BackendPort, token, uuid, *maxRetries, *retryDelay)
 	}()
 
 	// socket running; setup cleanup on shutdown
@@ -135,20 +136,23 @@ func main() {
 }
 
 func runReadLoop(client *network.TCPClient) error {
-	buf := make([]byte, 4096)
 	for {
-		n, err := client.Read(buf)
-		global.Logger.Info().Int("n", n).Err(err).Msg("Read from client")
+		msg, err := client.RecvProtocolMessage()
 		if err != nil {
 			return err
 		}
-		if n > 0 {
-			socket.HandleMessage(buf[:n])
+		switch msg.Type {
+		case network.MsgCommand:
+			if len(msg.CommandJSON) > 0 {
+				socket.HandleMessage(msg.CommandJSON)
+			}
+		default:
+			// ignore other frames for now
 		}
 	}
 }
 
-func runAgentClientWithConfig(host string, port int, headers map[string]string, maxRetries int, baseDelay time.Duration) {
+func runAgentClientWithConfig(host string, port int, token, deviceID string, maxRetries int, baseDelay time.Duration) {
 	const (
 		maxDelay      = 30 * time.Second
 		backoffFactor = 1.5
@@ -186,9 +190,9 @@ func runAgentClientWithConfig(host string, port int, headers map[string]string, 
 		delay = baseDelay
 		logger.Infof("Agent connected to backend %s:%d successfully!", host, port)
 
-		// Gửi headers và bắt đầu ping loop
-		if err := network.SendTokenHeaders(client, headers); err != nil {
-			logger.Errorf("Agent cannot send headers to backend: %v", err)
+		// Gửi login frame (device + token)
+		if err := client.SendLogin(deviceID, token); err != nil {
+			logger.Errorf("Agent cannot send login to backend: %v", err)
 			client.Close()
 			continue
 		}
@@ -202,17 +206,17 @@ func runAgentClientWithConfig(host string, port int, headers map[string]string, 
 	}
 }
 
-func loadOrPromptToken() (string, error) {
+func loadOrPromptToken() (string, string, error) {
 	if existing, err := auth.LoadToken(); err == nil && strings.TrimSpace(existing) != "" {
-		return strings.TrimSpace(existing), nil
+		return strings.TrimSpace(existing), state.GetDeviceID(), nil
 	}
 	return promptLogin()
 }
 
-func promptLogin() (string, error) {
+func promptLogin() (string, string, error) {
 	u, p, err := auth.PromptCredentials()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	return service.Login(u, p)
 }

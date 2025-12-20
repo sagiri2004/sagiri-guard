@@ -14,23 +14,9 @@ type DB struct {
 	Name string
 }
 
-type HTTP struct {
-	Host string
-	Port int
-}
-
 type TCP struct {
 	Host string
 	Port int
-}
-
-type Onedrive struct {
-	RefreshToken string
-	ClientID     string
-	ClientSecret string
-	RootFolderID string
-	DriveType    string
-	DriveID      string
 }
 
 type Backup struct {
@@ -39,16 +25,14 @@ type Backup struct {
 	TCP         TCP
 }
 type Config struct {
-	HTTP HTTP
-	TCP  TCP
-	DB   DB
-	JWT  struct {
+	TCP TCP
+	DB  DB
+	JWT struct {
 		Secret string
 		Issuer string
 		ExpMin int
 	}
-	Onedrive Onedrive
-	Backup   Backup
+	Backup Backup
 }
 
 func Load(path string) (*Config, error) {
@@ -57,47 +41,51 @@ func Load(path string) (*Config, error) {
 	v.SetConfigType("yaml")
 
 	// Defaults
-	v.SetDefault("backend.http.host", "127.0.0.1")
-	v.SetDefault("backend.http.port", 9400)
-	v.SetDefault("backend.tcp.host", "127.0.0.1")
-	v.SetDefault("backend.tcp.port", 9200)
+	v.SetDefault("backend.host", "127.0.0.1")
+	v.SetDefault("backend.port", 9200)
+	// maintain legacy keys but mirror defaults
+	v.SetDefault("backend.tcp.host", v.GetString("backend.host"))
+	v.SetDefault("backend.tcp.port", v.GetInt("backend.port"))
 	v.SetDefault("backend.db.host", "127.0.0.1")
 	v.SetDefault("backend.db.port", 3306)
 	v.SetDefault("backend.db.user", "root")
 	v.SetDefault("backend.db.pass", "")
 	v.SetDefault("backend.db.name", "sagiri_guard")
-	v.SetDefault("backend.onedrive.refresh_token", "")
-	v.SetDefault("backend.onedrive.client_id", "")
-	v.SetDefault("backend.onedrive.client_secret", "")
-	v.SetDefault("backend.onedrive.root_folder_id", "")
-	v.SetDefault("backend.onedrive.drive_type", "personal")
-	v.SetDefault("backend.onedrive.drive_id", "")
 	v.SetDefault("backend.backup.storage_path", "backups")
 	v.SetDefault("backend.backup.chunk_size", 524288) // 512KB
-	v.SetDefault("backend.backup.tcp.host", v.GetString("backend.tcp.host"))
-	v.SetDefault("backend.backup.tcp.port", v.GetInt("backend.tcp.port")+1)
+	v.SetDefault("backend.backup.tcp.host", v.GetString("backend.host"))
+	v.SetDefault("backend.backup.tcp.port", v.GetInt("backend.port"))
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
+	host := v.GetString("backend.host")
+	if host == "" {
+		host = v.GetString("backend.tcp.host")
+	}
+	port := v.GetInt("backend.port")
+	if port == 0 {
+		port = v.GetInt("backend.tcp.port")
+	}
+
+	backupHost := v.GetString("backend.backup.tcp.host")
+	if backupHost == "" {
+		backupHost = host
+	}
+	backupPort := v.GetInt("backend.backup.tcp.port")
+	if backupPort == 0 {
+		backupPort = port
+	}
+
 	cfg := &Config{
-		HTTP: HTTP{Host: v.GetString("backend.http.host"), Port: v.GetInt("backend.http.port")},
-		TCP:  TCP{Host: v.GetString("backend.tcp.host"), Port: v.GetInt("backend.tcp.port")},
-		DB:   DB{Host: v.GetString("backend.db.host"), Port: v.GetInt("backend.db.port"), User: v.GetString("backend.db.user"), Pass: v.GetString("backend.db.pass"), Name: v.GetString("backend.db.name")},
-		Onedrive: Onedrive{
-			RefreshToken: v.GetString("backend.onedrive.refresh_token"),
-			ClientID:     v.GetString("backend.onedrive.client_id"),
-			ClientSecret: v.GetString("backend.onedrive.client_secret"),
-			RootFolderID: v.GetString("backend.onedrive.root_folder_id"),
-			DriveType:    v.GetString("backend.onedrive.drive_type"),
-			DriveID:      v.GetString("backend.onedrive.drive_id"),
-		},
+		TCP: TCP{Host: host, Port: port},
+		DB:  DB{Host: v.GetString("backend.db.host"), Port: v.GetInt("backend.db.port"), User: v.GetString("backend.db.user"), Pass: v.GetString("backend.db.pass"), Name: v.GetString("backend.db.name")},
 		Backup: Backup{
 			StoragePath: v.GetString("backend.backup.storage_path"),
 			ChunkSize:   v.GetInt64("backend.backup.chunk_size"),
 			TCP: TCP{
-				Host: v.GetString("backend.backup.tcp.host"),
-				Port: v.GetInt("backend.backup.tcp.port"),
+				Host: backupHost,
+				Port: backupPort,
 			},
 		},
 	}

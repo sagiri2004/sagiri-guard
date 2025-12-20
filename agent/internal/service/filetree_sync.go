@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/logger"
+	"sagiri-guard/agent/internal/protocolclient"
 	"sagiri-guard/network"
 
 	"github.com/google/uuid"
@@ -177,28 +177,16 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 
 func sendFileTreeChanges(token, deviceUUID string, changes []fileTreeChange) error {
 	cfg := config.Get()
-	host, port := cfg.BackendHost, cfg.BackendHTTP
+	host, port := cfg.BackendHost, cfg.BackendPort
 
-	body, err := json.Marshal(changes)
+	msg, err := protocolclient.SendAction(host, port, deviceUUID, token, "filetree_sync", changes)
 	if err != nil {
 		return err
 	}
-
-	headers := map[string]string{
-		"Authorization": "Bearer " + strings.TrimSpace(token),
-		"X-Device-ID":   deviceUUID,
-		"Content-Type":  "application/json",
-		"Accept":        "application/json",
-	}
-
-	status, resp, err := network.HTTPRequest("POST", host, port, "/filetree/sync", "application/json", body, headers)
-	if err != nil {
-		return err
-	}
-	if status >= 300 {
-		snippet := strings.TrimSpace(resp)
+	if msg.Type != network.MsgAck || msg.StatusCode >= 300 {
+		snippet := strings.TrimSpace(msg.StatusMsg)
 		if snippet == "" {
-			snippet = fmt.Sprintf("status %d", status)
+			snippet = fmt.Sprintf("status %d", msg.StatusCode)
 		}
 		return fmt.Errorf("filetree sync failed: %s", snippet)
 	}

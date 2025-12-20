@@ -1,4 +1,4 @@
-//go:build windows
+//go:build linux
 
 package firewall
 
@@ -6,13 +6,13 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sagiri-guard/agent/internal/logger"
 	"strings"
 	"sync"
-	"sagiri-guard/agent/internal/logger"
 )
 
 const (
-	windowsHostsPath = `C:\Windows\System32\drivers\etc\hosts`
+	linuxHostsPath   = "/etc/hosts"
 	blockMarkerStart = "# === SAGIRI-GUARD BLOCK START ==="
 	blockMarkerEnd   = "# === SAGIRI-GUARD BLOCK END ==="
 )
@@ -30,7 +30,7 @@ var hostsManagerOnce sync.Once
 func GetHostsManager() *HostsManager {
 	hostsManagerOnce.Do(func() {
 		globalHostsManager = &HostsManager{
-			hostsPath: windowsHostsPath,
+			hostsPath: linuxHostsPath,
 			domains:   make(map[string]bool),
 		}
 	})
@@ -179,9 +179,8 @@ func (h *HostsManager) writeHostsFile(lines []string) error {
 
 	file, err := os.OpenFile(h.hostsPath, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0644)
 	if err != nil {
-		// Trên Windows, lỗi này thường do thiếu quyền admin
-		logger.Errorf("Failed to open hosts file for write (may need admin privileges): %v", err)
-		return fmt.Errorf("open hosts file for write (may need admin privileges): %w", err)
+		logger.Errorf("Failed to open hosts file for write (may need elevated privileges): %v", err)
+		return fmt.Errorf("open hosts file for write (may need elevated privileges): %w", err)
 	}
 	defer file.Close()
 
@@ -239,4 +238,3 @@ func (h *HostsManager) backupHostsFile(backupPath string) error {
 	_, err = dst.ReadFrom(src)
 	return err
 }
-

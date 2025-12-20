@@ -3,9 +3,8 @@ package device
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
 
+	"sagiri-guard/agent/internal/protocolclient"
 	"sagiri-guard/network"
 )
 
@@ -18,45 +17,18 @@ type Info struct {
 	Arch      string `json:"arch"`
 }
 
-func Get(host string, port int, token, uuid string) (*Info, int, error) {
-	path := "/devices?uuid=" + url.QueryEscape(uuid)
-	status, body, err := network.HTTPGetWithHeadersEx(host, port, path, authHeader(token))
-	if err != nil {
-		return nil, status, err
-	}
-	if status != http.StatusOK {
-		return nil, status, fmt.Errorf("device get failed: status=%d body=%s", status, body)
-	}
-	var d Info
-	if err := json.Unmarshal([]byte(body), &d); err != nil {
-		return nil, status, err
-	}
-	return &d, status, nil
-}
-
+// Register via protocol sub-command device_register. Requires that device has logged in before.
 func Register(host string, port int, token string, d Info) (*Info, int, error) {
-	b, _ := json.Marshal(d)
-	headers := authHeader(token)
-	if headers == nil {
-		return nil, 0, fmt.Errorf("device register failed: token is empty, cannot create auth header")
-	}
-	status, body, err := network.HTTPPostWithHeadersEx(host, port, "/devices/register", "application/json", b, headers)
+	msg, err := protocolclient.SendAction(host, port, d.UUID, token, "device_register", d)
 	if err != nil {
-		return nil, status, err
+		return nil, 0, err
 	}
-	if status != http.StatusOK {
-		return nil, status, fmt.Errorf("device register failed: status=%d body=%s", status, body)
+	if msg.Type != network.MsgAck || msg.StatusCode != 200 {
+		return nil, int(msg.StatusCode), fmt.Errorf("device register failed: code=%d msg=%s", msg.StatusCode, msg.StatusMsg)
 	}
 	var out Info
-	if err := json.Unmarshal([]byte(body), &out); err != nil {
-		return nil, status, fmt.Errorf("register failed: %v | raw=%s", err, body)
+	if msg.StatusMsg != "" {
+		_ = json.Unmarshal([]byte(msg.StatusMsg), &out)
 	}
-	return &out, status, nil
-}
-
-func authHeader(token string) map[string]string {
-	if token == "" {
-		return nil
-	}
-	return map[string]string{"Authorization": "Bearer " + token}
+	return &out, int(msg.StatusCode), nil
 }

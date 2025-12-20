@@ -11,6 +11,7 @@ import (
 	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/firewall"
 	"sagiri-guard/agent/internal/logger"
+	"sagiri-guard/agent/internal/protocolclient"
 	"sagiri-guard/agent/internal/service"
 	"sagiri-guard/agent/internal/state"
 	"sagiri-guard/network"
@@ -57,15 +58,13 @@ func (h getLogsHandler) HandleOnce(arg any) error {
 		return nil
 	}
 	deviceID := state.GetDeviceID()
-	// backend address
-	host, port := config.BackendHTTP()
+	// backend address (single protocol port)
+	host, port := config.BackendHostPort()
 	q := url.Values{}
 	q.Set("deviceid", deviceID)
-	path := "/agent/log?" + q.Encode()
-	headers := map[string]string{"Authorization": "Bearer " + token, "Content-Type": "text/plain"}
-	_, postErr := network.HTTPPostWithHeaders(host, port, path, "text/plain", data, headers)
-	if postErr != nil {
-		logger.Errorf("post logs failed: %v", postErr)
+	msg, err := protocolclient.SendAction(host, port, deviceID, token, "agent_log", map[string]string{"lines": string(data)})
+	if err != nil || msg.Type != network.MsgAck || msg.StatusCode >= 300 {
+		logger.Errorf("post logs failed: %v code=%d msg=%s", err, msg.StatusCode, msg.StatusMsg)
 	}
 	return nil
 }
@@ -175,7 +174,7 @@ func (h restoreHandler) HandleOnce(arg any) error {
 	}
 
 	// Download file từ server
-	host, port := config.BackendHTTP()
+	host, port := config.BackendHostPort()
 	session, err := backup.InitDownload(host, port, token, a.FileName)
 	if err != nil {
 		return fmt.Errorf("init download: %w", err)

@@ -2,96 +2,32 @@ package network
 
 /*
 #cgo CFLAGS: -I${SRCDIR}
-// SỬA LỖI: Thêm -lws2_32 để link thư viện Winsock trên Windows
-#cgo LDFLAGS: -L${SRCDIR} -lnetwork -lws2_32
+#cgo LDFLAGS: -L${SRCDIR} -lnetwork
 #include <stdlib.h>
 #include <stddef.h>
-extern int http_request(const char* host, int port, const char* method, const char* path,
-                        const char* content_type, const char* body, size_t body_len,
-                        const char* extra_headers, char* response, size_t response_len);
+#include <stdint.h>
 #include "network.h"
+
+// Bridge callback implemented in Go (exported below)
+extern void goProtocolMessageBridge(SOCKET client_fd, protocol_message_t* msg, void* user_data);
 */
 import "C"
 
 import (
-	"bytes"
 	"errors"
-	"strconv"
-	"strings"
 	"unsafe"
 )
 
-var errHTTPSUnsupported = errors.New("https not supported in local mode")
-
-func httpRequest(method, host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
-	if port == 443 {
-		return 0, "", errHTTPSUnsupported
-	}
-	if host == "" {
-		return 0, "", errors.New("host is required")
-	}
-	if path == "" {
-		path = "/"
-	}
-
-	buf := make([]byte, 128*1024)
-
-	cHost := C.CString(host)
-	defer C.free(unsafe.Pointer(cHost))
-	cMethod := C.CString(strings.ToUpper(method))
-	defer C.free(unsafe.Pointer(cMethod))
-	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cPath))
-
-	var cType *C.char
-	if contentType != "" {
-		cType = C.CString(contentType)
-		defer C.free(unsafe.Pointer(cType))
-	}
-
-	var cBody *C.char
-	var bodyLen C.size_t
-	if len(body) > 0 {
-		tmp := C.CBytes(body)
-		cBody = (*C.char)(tmp)
-		bodyLen = C.size_t(len(body))
-		defer C.free(tmp)
-	}
-
-	extra, release := buildExtraHeaders(headers)
-	defer release()
-
-	rc := C.http_request(
-		cHost,
-		C.int(port),
-		cMethod,
-		cPath,
-		cType,
-		cBody,
-		bodyLen,
-		extra,
-		(*C.char)(unsafe.Pointer(&buf[0])),
-		C.size_t(len(buf)),
-	)
-	if rc != 0 {
-		return 0, "", errors.New("http request failed")
-	}
-
-	raw := goStringFromBuffer(buf)
-	status, resp := parseStatusAndBody(strings.TrimSpace(raw))
-	return status, resp, nil
-}
-
-// Init initializes the C networking library (WSAStartup on Windows).
+// Init initializes the C networking library (no-op on Linux).
 // This MUST be called once at the start of the application.
 func Init() error {
 	if C.network_init() != 0 {
-		return errors.New("failed to initialize C networking library (WSAStartup)")
+		return errors.New("failed to initialize C networking library")
 	}
 	return nil
 }
 
-// Cleanup cleans up the C networking library (WSACleanup on Windows).
+// Cleanup cleans up the C networking library (no-op on Linux).
 // This MUST be called once before the application exits.
 func Cleanup() {
 	C.network_cleanup()
@@ -227,174 +163,278 @@ func (s *TCPServer) Close() error {
 	return nil
 }
 
-func buildExtraHeaders(headers map[string]string) (*C.char, func()) {
-	if len(headers) == 0 {
-		return nil, func() {}
+// ========== Protocol Message Functions ==========
+
+// ProtocolMessageType represents the type of protocol message
+type ProtocolMessageType uint8
+
+const (
+	MsgLogin     ProtocolMessageType = 0x01
+	MsgCommand   ProtocolMessageType = 0x02
+	MsgFileMeta  ProtocolMessageType = 0x03
+	MsgFileChunk ProtocolMessageType = 0x04
+	MsgFileDone  ProtocolMessageType = 0x05
+	MsgAck       ProtocolMessageType = 0x06
+	MsgError     ProtocolMessageType = 0x7F
+)
+
+// ProtocolMessage represents a decoded protocol frame
+type ProtocolMessage struct {
+	Type        ProtocolMessageType
+	Raw         []byte
+	DeviceID    string
+	Token       string
+	SessionID   string
+	CommandJSON []byte
+
+	FileName    string
+	FileSize    uint64
+	ChunkOffset uint32
+	ChunkLen    uint32
+	ChunkData   []byte
+
+	StatusCode uint16
+	StatusMsg  string
+}
+
+// SendLogin sends a login frame (device + token)
+func (c *TCPClient) SendLogin(deviceID, token string) error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
 	}
-	var builder strings.Builder
-	for k, v := range headers {
-		builder.WriteString(k)
-		builder.WriteString(": ")
-		builder.WriteString(v)
-		builder.WriteString("\r\n")
-	}
-	result := builder.String()
-	if result == "" {
-		return nil, func() {}
-	}
-	ptr := C.CString(result)
-	return ptr, func() {
-		if ptr != nil {
-			C.free(unsafe.Pointer(ptr))
-		}
-	}
-}
-
-func HTTPGet(host string, port int, path string) (string, error) {
-	_, body, err := HTTPRequest("GET", host, port, path, "", nil, nil)
-	return body, err
-}
-
-func HTTPGetWithHeaders(host string, port int, path string, headers map[string]string) (string, error) {
-	_, body, err := HTTPRequest("GET", host, port, path, "", nil, headers)
-	return body, err
-}
-
-func HTTPGetWithHeadersEx(host string, port int, path string, headers map[string]string) (int, string, error) {
-	return httpRequest("GET", host, port, path, "", nil, headers)
-}
-
-func HTTPDelete(host string, port int, path string) (string, error) {
-	_, body, err := HTTPRequest("DELETE", host, port, path, "", nil, nil)
-	return body, err
-}
-
-func HTTPDeleteWithHeaders(host string, port int, path string, headers map[string]string) (string, error) {
-	_, body, err := HTTPRequest("DELETE", host, port, path, "", nil, headers)
-	return body, err
-}
-
-func HTTPDeleteWithHeadersEx(host string, port int, path string, headers map[string]string) (int, string, error) {
-	return httpRequest("DELETE", host, port, path, "", nil, headers)
-}
-
-func HTTPPost(host string, port int, path, contentType string, body []byte) (string, error) {
-	_, resp, err := HTTPRequest("POST", host, port, path, contentType, body, nil)
-	return resp, err
-}
-
-func HTTPPostWithHeaders(host string, port int, path, contentType string, body []byte, headers map[string]string) (string, error) {
-	_, resp, err := HTTPRequest("POST", host, port, path, contentType, body, headers)
-	return resp, err
-}
-
-func HTTPPostWithHeadersEx(host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
-	return httpRequest("POST", host, port, path, contentType, body, headers)
-}
-
-func HTTPPut(host string, port int, path, contentType string, body []byte) (string, error) {
-	_, resp, err := HTTPRequest("PUT", host, port, path, contentType, body, nil)
-	return resp, err
-}
-
-func HTTPPutWithHeaders(host string, port int, path, contentType string, body []byte, headers map[string]string) (string, error) {
-	_, resp, err := HTTPRequest("PUT", host, port, path, contentType, body, headers)
-	return resp, err
-}
-
-func HTTPPutWithHeadersEx(host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
-	return httpRequest("PUT", host, port, path, contentType, body, headers)
-}
-
-// HTTPRequest exposes the unified HTTP helper so callers có thể truyền method/path tuỳ ý.
-func HTTPRequest(method, host string, port int, path, contentType string, body []byte, headers map[string]string) (int, string, error) {
-	return httpRequest(method, host, port, path, contentType, body, headers)
-}
-
-func SendTokenHeaders(c *TCPClient, headers map[string]string) error {
-	extra, release := buildExtraHeaders(headers)
-	defer release()
-	builder := strings.Builder{}
-	builder.WriteString("TOKEN-HEADERS\r\n")
-	if extra != nil {
-		builder.WriteString(C.GoString(extra))
-	}
-	builder.WriteString("\r\n")
-	if _, err := c.Write([]byte(builder.String())); err != nil {
-		return err
+	cDev := C.CString(deviceID)
+	cTok := C.CString(token)
+	defer C.free(unsafe.Pointer(cDev))
+	defer C.free(unsafe.Pointer(cTok))
+	if C.protocol_send_login(c.fd, cDev, cTok) != 0 {
+		return errors.New("send login failed")
 	}
 	return nil
 }
 
-func ReadTokenHeaders(c *TCPClient) (map[string]string, []byte, error) {
-	headers := make(map[string]string)
-	buf := make([]byte, 4096)
-	total := 0
-	for total < len(buf) {
-		n, err := c.Read(buf[total:])
-		if n > 0 {
-			total += n
-			if idx := bytes.Index(buf[:total], []byte("\r\n\r\n")); idx != -1 {
-				lines := bytes.Split(buf[:idx], []byte("\r\n"))
-				if len(lines) > 0 && strings.EqualFold(string(lines[0]), "TOKEN-HEADERS") {
-					lines = lines[1:]
-				}
-				for _, line := range lines {
-					kv := bytes.SplitN(line, []byte(":"), 2)
-					if len(kv) == 2 {
-						headers[strings.ToLower(strings.TrimSpace(string(kv[0])))] = strings.TrimSpace(string(kv[1]))
-					}
-				}
-				remaining := append([]byte(nil), buf[idx+4:total]...)
-				return headers, remaining, nil
+// SendCommand sends a JSON command payload
+func (c *TCPClient) SendCommand(jsonPayload []byte) error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
+	}
+	if len(jsonPayload) == 0 {
+		return errors.New("empty command payload")
+	}
+	if C.protocol_send_command(c.fd, (*C.char)(unsafe.Pointer(&jsonPayload[0])), C.size_t(len(jsonPayload))) != 0 {
+		return errors.New("send command failed")
+	}
+	return nil
+}
+
+// SendFileMeta sends file metadata
+func (c *TCPClient) SendFileMeta(name string, size uint64) error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
+	}
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+	if C.protocol_send_file_meta(c.fd, cName, C.uint64_t(size)) != 0 {
+		return errors.New("send file meta failed")
+	}
+	return nil
+}
+
+// SendFileChunk sends a file chunk
+func (c *TCPClient) SendFileChunk(offset uint32, data []byte) error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	if C.protocol_send_file_chunk(c.fd, nil, nil, C.uint32_t(offset), (*C.char)(unsafe.Pointer(&data[0])), C.uint32_t(len(data))) != 0 {
+		return errors.New("send file chunk failed")
+	}
+	return nil
+}
+
+// SendFileChunkWithSession sends a file chunk with session_id/token
+func (c *TCPClient) SendFileChunkWithSession(sessionID, token string, offset uint32, data []byte) error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	cSid := C.CString(sessionID)
+	cTok := C.CString(token)
+	defer C.free(unsafe.Pointer(cSid))
+	defer C.free(unsafe.Pointer(cTok))
+	if C.protocol_send_file_chunk(c.fd, cSid, cTok, C.uint32_t(offset), (*C.char)(unsafe.Pointer(&data[0])), C.uint32_t(len(data))) != 0 {
+		return errors.New("send file chunk failed")
+	}
+	return nil
+}
+
+// SendFileDone signals end of file transfer
+func (c *TCPClient) SendFileDone() error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
+	}
+	if C.protocol_send_file_done(c.fd, nil, nil) != 0 {
+		return errors.New("send file done failed")
+	}
+	return nil
+}
+
+// SendFileDoneWithSession signals end with session info
+func (c *TCPClient) SendFileDoneWithSession(sessionID, token string) error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
+	}
+	cSid := C.CString(sessionID)
+	cTok := C.CString(token)
+	defer C.free(unsafe.Pointer(cSid))
+	defer C.free(unsafe.Pointer(cTok))
+	if C.protocol_send_file_done(c.fd, cSid, cTok) != 0 {
+		return errors.New("send file done failed")
+	}
+	return nil
+}
+
+// SendAck sends an ACK/ERROR frame
+func (c *TCPClient) SendAck(code uint16, msg string) error {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return errors.New("client not open")
+	}
+	cMsg := C.CString(msg)
+	defer C.free(unsafe.Pointer(cMsg))
+	if C.protocol_send_ack(c.fd, C.uint16_t(code), cMsg) != 0 {
+		return errors.New("send ack failed")
+	}
+	return nil
+}
+
+// RecvProtocolMessage receives a protocol message from the peer
+func (c *TCPClient) RecvProtocolMessage() (*ProtocolMessage, error) {
+	if c == nil || c.fd == C.INVALID_SOCKET {
+		return nil, errors.New("client not open")
+	}
+
+	var cMsg C.protocol_message_t
+	if C.protocol_recv_message(c.fd, &cMsg) != 0 {
+		return nil, errors.New("recv message failed")
+	}
+	defer C.protocol_message_free(&cMsg)
+
+	return convertProtocolMessage(&cMsg), nil
+}
+
+func convertProtocolMessage(cMsg *C.protocol_message_t) *ProtocolMessage {
+	msgType := C.protocol_message_get_type(cMsg)
+	pm := &ProtocolMessage{
+		Type:        ProtocolMessageType(msgType),
+		DeviceID:    C.GoString(&cMsg.device_id[0]),
+		Token:       C.GoString(&cMsg.token[0]),
+		SessionID:   C.GoString(&cMsg.session_id[0]),
+		FileName:    C.GoString(&cMsg.file_name[0]),
+		FileSize:    uint64(cMsg.file_size),
+		ChunkOffset: uint32(cMsg.chunk_offset),
+		ChunkLen:    uint32(cMsg.chunk_len),
+		StatusCode:  uint16(cMsg.status_code),
+		StatusMsg:   C.GoString(&cMsg.status_msg[0]),
+	}
+
+	if cMsg.data != nil && cMsg.data_len > 0 {
+		pm.Raw = C.GoBytes(unsafe.Pointer(cMsg.data), C.int(cMsg.data_len))
+	}
+
+	switch pm.Type {
+	case MsgCommand:
+		pm.CommandJSON = pm.Raw
+	case MsgFileChunk:
+		if len(pm.Raw) >= 2 {
+			sidLen := int(pm.Raw[0])
+			tokLen := int(pm.Raw[1])
+			pos := 2 + sidLen + tokLen + 8
+			if pos <= len(pm.Raw) {
+				pm.ChunkData = pm.Raw[pos:]
 			}
 		}
-		if err != nil {
-			return nil, nil, err
-		}
-		if n == 0 {
-			break
-		}
 	}
-	return headers, nil, nil
+
+	return pm
 }
 
-func goStringFromBuffer(b []byte) string {
-	n := 0
-	for n < len(b) && b[n] != 0 {
-		n++
-	}
-	return string(b[:n])
+// Compatibility helpers
+func (c *TCPClient) SendText(data []byte) error { return c.SendCommand(data) }
+func (c *TCPClient) RecvMessage() (*ProtocolMessage, error) {
+	return c.RecvProtocolMessage()
 }
 
-func parseStatusAndBody(raw string) (int, string) {
-	if strings.HasPrefix(raw, "HTTP/") {
-		lineEnd := strings.Index(raw, "\r\n")
-		if lineEnd == -1 {
-			lineEnd = strings.Index(raw, "\n")
-		}
-		if lineEnd > 0 {
-			fields := strings.Fields(raw[:lineEnd])
-			if len(fields) >= 2 {
-				if code, err := strconv.Atoi(fields[1]); err == nil {
-					return code, extractHTTPBody(raw)
-				}
-			}
-		}
-		return 0, extractHTTPBody(raw)
-	}
-	return 200, raw
+// ProtocolServer wraps the C multi-client protocol server (no goroutines)
+type ProtocolServer struct {
+	server *C.protocol_server_t
 }
 
-// extractHTTPBody returns body if raw is a full HTTP response, otherwise returns raw.
-func extractHTTPBody(raw string) string {
-	if strings.HasPrefix(raw, "HTTP/") {
-		if idx := strings.Index(raw, "\r\n\r\n"); idx != -1 {
-			return raw[idx+4:]
-		}
-		if idx := strings.Index(raw, "\n\n"); idx != -1 {
-			return raw[idx+2:]
-		}
+// ProtocolMessageHandler is invoked from C worker threads
+type ProtocolMessageHandler func(client *TCPClient, msg *ProtocolMessage)
+
+var protocolHandler ProtocolMessageHandler
+
+//export goProtocolMessageBridge
+func goProtocolMessageBridge(clientFd C.SOCKET, cMsg *C.protocol_message_t, userData unsafe.Pointer) {
+	handler := protocolHandler
+	if handler == nil {
+		return
 	}
-	return raw
+	msg := convertProtocolMessage(cMsg)
+	handler(&TCPClient{fd: clientFd}, msg)
+}
+
+// ListenProtocol creates a protocol server handled entirely in C threads
+func ListenProtocol(host string, port int, handler ProtocolMessageHandler) (*ProtocolServer, error) {
+	if port <= 0 {
+		return nil, errors.New("invalid port")
+	}
+	if handler == nil {
+		return nil, errors.New("handler is required")
+	}
+
+	var cHost *C.char
+	if host != "" {
+		cHost = C.CString(host)
+		defer C.free(unsafe.Pointer(cHost))
+	}
+
+	protocolHandler = handler
+
+	var srv *C.protocol_server_t
+	rc := C.protocol_server_create(
+		cHost,
+		C.int(port),
+		(C.protocol_message_cb)(C.goProtocolMessageBridge),
+		nil,
+		&srv,
+	)
+	if rc != 0 {
+		return nil, errors.New("protocol server create failed")
+	}
+
+	return &ProtocolServer{server: srv}, nil
+}
+
+func (s *ProtocolServer) Stop() error {
+	if s == nil || s.server == nil {
+		return errors.New("server not open")
+	}
+	if C.protocol_server_stop(s.server) != 0 {
+		return errors.New("protocol server stop failed")
+	}
+	return nil
+}
+
+func (s *ProtocolServer) Close() error {
+	if s == nil || s.server == nil {
+		return errors.New("server not open")
+	}
+	C.protocol_server_destroy(s.server)
+	s.server = nil
+	protocolHandler = nil
+	return nil
 }
