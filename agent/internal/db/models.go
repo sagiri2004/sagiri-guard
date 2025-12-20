@@ -12,6 +12,7 @@ type Token struct {
 type MonitoredFile struct {
 	ID            uint   `gorm:"primaryKey"`
 	Path          string `gorm:"uniqueIndex"`
+	ItemID        string `gorm:"size:191;index"` // Item ID được tạo từ logical path, đồng bộ với backend
 	LastAction    string `gorm:"size:32"`
 	LastEventAt   time.Time
 	LastBackupAt  *time.Time

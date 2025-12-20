@@ -61,6 +61,8 @@ func Build(configPath string) (*App, error) {
 		&models.ItemContentTypeLink{},
 		&models.AgentCommand{},
 		&models.BackupFileVersion{},
+		&models.WebsiteBlockRule{},
+		&models.WebsiteBlockStatus{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -73,6 +75,7 @@ func Build(configPath string) (*App, error) {
 	contentTypeRepo := repo.NewContentTypeRepository(gdb)
 	backupVersionRepo := repo.NewBackupVersionRepository(gdb)
 	agentCmdRepo := repo.NewAgentCommandRepository(gdb)
+	websiteBlockRepo := repo.NewWebsiteBlockRepository(gdb)
 
 	userSvc := services.NewUserService(userRepo)
 	deviceSvc := services.NewDeviceService(deviceRepo)
@@ -83,6 +86,7 @@ func Build(configPath string) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init backup service: %w", err)
 	}
+	websiteBlockSvc := services.NewWebsiteBlockService(websiteBlockRepo)
 	if err := userSvc.EnsureAdmin("admin", "admin123"); err != nil {
 		// non-critical
 	}
@@ -102,13 +106,14 @@ func Build(configPath string) (*App, error) {
 	deviceCtrl := controllers.NewDeviceController(deviceSvc)
 	agentLogCtrl := controllers.NewAgentLogController(agentLogSvc)
 	backupCtrl := controllers.NewBackupController(backupSvc)
-	adminBackupCtrl := controllers.NewAdminBackupController(backupVersionRepo, hub)
+	adminBackupCtrl := controllers.NewAdminBackupController(backupVersionRepo, fileTreeRepo, hub)
 	fileTreeCtrl := controllers.NewFileTreeController(fileTreeSvc)
 	contentTypeCtrl := controllers.NewContentTypeController(contentTypeSvc)
+	websiteBlockCtrl := controllers.NewWebsiteBlockController(websiteBlockSvc, hub, agentCmdRepo)
 
 	// Router
-	cmdCtrl := controllers.NewCommandController(hub, agentCmdRepo)
-	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, backupCtrl, agentLogCtrl, fileTreeCtrl, contentTypeCtrl, adminBackupCtrl, mw)
+	cmdCtrl := controllers.NewCommandController(hub, agentCmdRepo, fileTreeRepo, backupVersionRepo)
+	h := router.NewRouter(httpCtrl, authCtrl, adminCtrl, deviceCtrl, cmdCtrl, backupCtrl, agentLogCtrl, fileTreeCtrl, contentTypeCtrl, adminBackupCtrl, websiteBlockCtrl, mw)
 	// Wrap with logging middleware
 	h = middleware.Logging(h)
 

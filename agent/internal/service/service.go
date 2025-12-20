@@ -81,9 +81,11 @@ var (
 		sync.Mutex
 		inFlight map[string]struct{}
 		recent   map[string]time.Time
+		enabled  bool // Flag để bật/tắt backup tự động
 	}{
 		inFlight: make(map[string]struct{}),
 		recent:   make(map[string]time.Time),
+		enabled:  true, // Mặc định bật backup
 	}
 	backupCooldown       = 10 * time.Second
 	fileSettleInterval   = 500 * time.Millisecond
@@ -91,8 +93,32 @@ var (
 	fileSettleStablePass = 2
 )
 
+// SetBackupEnabled bật/tắt backup tự động
+func SetBackupEnabled(enabled bool) {
+	backupState.Lock()
+	defer backupState.Unlock()
+	backupState.enabled = enabled
+	if enabled {
+		logger.Info("Automatic backup enabled")
+	} else {
+		logger.Info("Automatic backup disabled")
+	}
+}
+
+// IsBackupEnabled kiểm tra xem backup tự động có được bật không
+func IsBackupEnabled() bool {
+	backupState.Lock()
+	defer backupState.Unlock()
+	return backupState.enabled
+}
+
 func scheduleBackup(path string) {
 	backupState.Lock()
+	// Kiểm tra xem backup có được bật không
+	if !backupState.enabled {
+		backupState.Unlock()
+		return
+	}
 	if last, ok := backupState.recent[path]; ok && time.Since(last) < backupCooldown {
 		backupState.Unlock()
 		return
@@ -179,8 +205,18 @@ func backupFile(path string) error {
 	if token == "" {
 		return nil
 	}
+	
+	// Lấy file_id từ MonitoredFile để gửi lên backend
+	var fileID string
+	if adb := db.Get(); adb != nil {
+		var mf db.MonitoredFile
+		if err := adb.Where("path = ?", path).First(&mf).Error; err == nil {
+			fileID = mf.ItemID // Sử dụng ItemID đã lưu trong MonitoredFile
+		}
+	}
+	
 	host, port := config.BackendHTTP()
-	session, err := backup.InitUpload(host, port, token, path)
+	session, err := backup.InitUpload(host, port, token, path, fileID)
 	if err != nil {
 		return err
 	}

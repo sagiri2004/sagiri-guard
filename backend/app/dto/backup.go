@@ -21,6 +21,7 @@ type BackupUploadInitRequest struct {
 	FileSize    int64  `json:"file_size"`
 	Checksum    string `json:"checksum,omitempty"`
 	LogicalPath string `json:"logical_path,omitempty"`
+	FileID      string `json:"file_id,omitempty"`
 }
 
 type BackupDownloadInitRequest struct {

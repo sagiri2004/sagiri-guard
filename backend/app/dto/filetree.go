@@ -24,6 +24,8 @@ type TreeQuery struct {
 	Search         string
 	Page           int
 	PageSize       int
+	IncludeDeleted bool   // Nếu true, sẽ query cả các item đã xóa mềm
+	DeletedSince   string // Format: "6h", "24h", "7d" hoặc timestamp. Chỉ áp dụng khi IncludeDeleted=true
 }
 
 // ContentTypeAssignment request body để gán nhãn cho node.
@@ -41,4 +43,5 @@ type TreeNodeResponse struct {
 	Extension      string  `json:"extension,omitempty"`
 	ContentTypeIDs []uint  `json:"content_type_ids"`
 	UpdatedAtUnix  int64   `json:"updated_at"`
+	DeletedAtUnix  *int64  `json:"deleted_at,omitempty"` // Timestamp khi item bị xóa mềm, nil nếu chưa xóa
 }

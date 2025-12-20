@@ -73,7 +73,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("backend.onedrive.drive_type", "personal")
 	v.SetDefault("backend.onedrive.drive_id", "")
 	v.SetDefault("backend.backup.storage_path", "backups")
-	v.SetDefault("backend.backup.chunk_size", 524288)
+	v.SetDefault("backend.backup.chunk_size", 524288) // 512KB
 	v.SetDefault("backend.backup.tcp.host", v.GetString("backend.tcp.host"))
 	v.SetDefault("backend.backup.tcp.port", v.GetInt("backend.tcp.port")+1)
 	if err := v.ReadInConfig(); err != nil {

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,9 +29,26 @@ func NewFileTreeService(treeRepo *repo.FileTreeRepository, contentRepo *repo.Con
 func (s *FileTreeService) ApplyChanges(deviceUUID string, changes []dto.FileChange) error {
 	for _, change := range changes {
 		if change.Deleted {
-			if err := s.treeRepo.DeleteItem(deviceUUID, change.ID); err != nil {
+			// Khi delete, tìm item theo ID hoặc logical path
+			// Vì agent có thể tạo ID mới khi LastEventAt thay đổi, nên cần fallback tìm theo path
+			err := s.treeRepo.DeleteItem(deviceUUID, change.ID)
+			if err != nil {
+				// Nếu có lỗi thực sự (không phải not found), thử tìm theo logical path
+				if change.CurrentPath != "" {
+					// DeleteItemByLogicalPath sẽ không trả về error nếu không tìm thấy
+					if err2 := s.treeRepo.DeleteItemByLogicalPath(deviceUUID, change.CurrentPath); err2 != nil {
+						// Chỉ trả về error nếu có lỗi thực sự (không phải not found)
+						return fmt.Errorf("delete by ID failed: %v, delete by path failed: %v", err, err2)
+					}
+				} else {
+					// Nếu không có CurrentPath và có lỗi, chỉ trả về error nếu không phải not found
+					// DeleteItem đã được sửa để không trả về error khi not found
+					if err != nil {
 				return err
+					}
+				}
 			}
+			// Tiếp tục với change tiếp theo, không fail toàn bộ batch
 			continue
 		}
 		if _, err := s.upsertPath(deviceUUID, change); err != nil {
@@ -49,6 +67,8 @@ func (s *FileTreeService) GetNodes(query dto.TreeQuery) ([]*models.Item, int64, 
 		ContentTypeIDs: query.ContentTypeIDs,
 		Page:           query.Page,
 		PageSize:       query.PageSize,
+		IncludeDeleted: query.IncludeDeleted,
+		DeletedSince:   query.DeletedSince,
 	}
 	return s.treeRepo.ListItems(filter)
 }
@@ -87,9 +107,13 @@ func (s *FileTreeService) upsertPath(deviceUUID string, change dto.FileChange) (
 	for idx, segment := range segments {
 		isLast := idx == len(segments)-1
 		if isLast && !change.IsDir {
+			// Luôn dùng ID từ agent, không tự tạo
+			// Agent đảm bảo ID unique bằng cách thêm timestamp
 			itemID := change.ID
 			if itemID == "" {
-				itemID = deterministicID(deviceUUID, segments)
+				// Nếu agent không gửi ID, đây là lỗi - không nên tự tạo
+				// Log warning và skip file này
+				return nil, fmt.Errorf("missing file ID from agent for path: %s", change.CurrentPath)
 			}
 			fileNode := &models.FileNode{
 				ID:             itemID,

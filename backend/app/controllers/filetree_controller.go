@@ -79,6 +79,10 @@ func (c *FileTreeController) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse include_deleted parameter
+	includeDeleted := r.URL.Query().Get("include_deleted") == "true"
+	deletedSince := r.URL.Query().Get("deleted_since") // Format: "6h", "24h", "7d" hoặc timestamp
+
 	query := dto.TreeQuery{
 		DeviceUUID:     deviceID,
 		ParentID:       parentID,
@@ -87,6 +91,8 @@ func (c *FileTreeController) List(w http.ResponseWriter, r *http.Request) {
 		Search:         r.URL.Query().Get("q"),
 		Page:           page,
 		PageSize:       size,
+		IncludeDeleted: includeDeleted,
+		DeletedSince:   deletedSince,
 	}
 
 	items, total, err := c.Tree.GetNodes(query)
@@ -162,6 +168,13 @@ func toTreeNode(item *models.Item) dto.TreeNodeResponse {
 	for _, ct := range item.ContentTypes {
 		ctIDs = append(ctIDs, ct.ID)
 	}
+	
+	var deletedAtUnix *int64
+	if item.DeletedAt.Valid {
+		unix := item.DeletedAt.Time.Unix()
+		deletedAtUnix = &unix
+	}
+	
 	return dto.TreeNodeResponse{
 		ID:             item.ID,
 		Name:           item.Name,
@@ -171,6 +184,7 @@ func toTreeNode(item *models.Item) dto.TreeNodeResponse {
 		Extension:      extension,
 		ContentTypeIDs: ctIDs,
 		UpdatedAtUnix:  item.UpdatedAt.Unix(),
+		DeletedAtUnix:  deletedAtUnix,
 	}
 }
 

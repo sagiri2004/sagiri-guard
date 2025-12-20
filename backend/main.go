@@ -32,7 +32,6 @@ func main() {
 	}
 	global.Logger.Info().Msgf("HTTP server is listening on %s:%d...", app.Cfg.HTTP.Host, app.Cfg.HTTP.Port)
 
-	// TCP socket server: chỉ lắng nghe và nhận kết nối từ client
 	go func() {
 		if err := server.StartTCPServer(app.Cfg.TCP.Host, app.Cfg.TCP.Port, app.Socket.HandleClient); err != nil {
 			global.Logger.Error().Msgf("TCP server stopped with error: %v", err)

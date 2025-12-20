@@ -22,20 +22,21 @@ var (
 )
 
 type BackupSession struct {
-	ID        string
-	Token     string
-	DeviceID  string
+	ID          string
+	Token       string
+	DeviceID    string
+	FileID      string // file ID từ agent
 	LogicalPath string
-	FileName  string
-	FileSize  int64
-	Checksum  string
-	Direction dto.TransferDirection
-	Status    dto.SessionStatus
-	TempPath  string
-	FinalPath string
-	BytesDone int64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	FileName    string
+	FileSize    int64
+	Checksum    string
+	Direction   dto.TransferDirection
+	Status      dto.SessionStatus
+	TempPath    string
+	FinalPath   string
+	BytesDone   int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type BackupService struct {
@@ -119,6 +120,7 @@ func (s *BackupService) PrepareUpload(deviceID string, req dto.BackupUploadInitR
 		ID:          newID("up"),
 		Token:       newToken(),
 		DeviceID:    deviceID,
+		FileID:      req.FileID, // Lưu file_id từ agent
 		LogicalPath: logicalPath,
 		FileName:    safeName,
 		FileSize:    req.FileSize,
@@ -254,6 +256,7 @@ func (s *BackupService) FinalizeUpload(id string) error {
 		}
 		v := &models.BackupFileVersion{
 			DeviceID:    sess.DeviceID,
+			FileID:      sess.FileID, // Lưu file_id từ agent
 			LogicalPath: sess.LogicalPath,
 			FileName:    sess.FileName,
 			StoredName:  filepath.Base(sess.FinalPath),

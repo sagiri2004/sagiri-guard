@@ -68,4 +68,47 @@ func (r *BackupVersionRepository) Get(deviceID, logicalPath string, version int)
 	return &v, nil
 }
 
+// GetByID trả về BackupFileVersion theo ID.
+func (r *BackupVersionRepository) GetByID(id uint) (*models.BackupFileVersion, error) {
+	var v models.BackupFileVersion
+	err := r.db.Where("id = ?", id).First(&v).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+// ListByFileID trả về tất cả BackupFileVersion của một file_id.
+// Query trực tiếp theo FileID (đã được lưu trong BackupFileVersion).
+func (r *BackupVersionRepository) ListByFileID(deviceID, fileID string) ([]models.BackupFileVersion, error) {
+	var versions []models.BackupFileVersion
+	err := r.db.
+		Where("device_id = ? AND file_id = ?", deviceID, fileID).
+		Order("version DESC").
+		Find(&versions).Error
+	if err != nil {
+		return nil, err
+	}
+	return versions, nil
+}
+
+// GetLatestByFileID trả về version mới nhất của một file_id.
+func (r *BackupVersionRepository) GetLatestByFileID(deviceID, fileID string) (*models.BackupFileVersion, error) {
+	var v models.BackupFileVersion
+	err := r.db.
+		Where("device_id = ? AND file_id = ?", deviceID, fileID).
+		Order("version DESC").
+		First(&v).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
 

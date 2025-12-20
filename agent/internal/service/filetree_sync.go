@@ -53,9 +53,15 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 		return nil
 	}
 
+	// Query các file cần sync:
+	// 1. change_pending = true (file mới hoặc đã thay đổi)
+	// 2. last_backup_at IS NULL hoặc < last_event_at (chưa backup hoặc đã thay đổi sau backup)
+	// 3. last_action = 'delete' hoặc 'move_out' (luôn sync delete event để backend có thể soft delete)
 	var rows []db.MonitoredFile
 	if err := adb.
-		Where("change_pending = ? OR last_backup_at IS NULL OR last_backup_at < last_event_at", true).
+		Where("change_pending = ? OR last_backup_at IS NULL OR last_backup_at < last_event_at OR last_action IN ?",
+			true,
+			[]string{string(monitorActionDelete()), string(monitorActionMoveOut())}).
 		Order("last_event_at ASC").
 		Limit(256).
 		Find(&rows).Error; err != nil {
@@ -105,8 +111,20 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 		}
 		logicalPath := strings.Join(logicalSegments, "/")
 
-		// build deterministic ID từ device + logical path segments
-		itemID := deterministicID(deviceUUID, logicalSegments)
+		// Sử dụng ItemID đã lưu trong MonitoredFile, hoặc tạo mới bằng uniqueID()
+		// để đảm bảo mỗi file instance có ID unique (kể cả khi cùng path và name)
+		itemID := row.ItemID
+		if itemID == "" {
+			// Chưa có ItemID, tạo mới bằng uniqueID với timestamp để đảm bảo tính duy nhất
+			// Sử dụng database ID và LastEventAt để phân biệt các file instance khác nhau
+			itemID = uniqueID(deviceUUID, logicalSegments, row.ID, row.LastEventAt)
+			// Lưu ItemID vào MonitoredFile để dùng cho các lần sync sau
+			if err := adb.Model(&db.MonitoredFile{}).
+				Where("id = ?", row.ID).
+				Update("item_id", itemID).Error; err != nil {
+				logger.Errorf("Failed to update ItemID for %s: %v", path, err)
+			}
+		}
 
 		name := ""
 		if len(logicalSegments) > 0 {
@@ -266,8 +284,27 @@ func splitSegments(p string) []string {
 	return segments
 }
 
+// uniqueID tạo ID duy nhất cho mỗi file instance bằng cách kết hợp
+// deviceUUID, logical path segments, database ID, LastEventAt và timestamp hiện tại.
+// Điều này đảm bảo mỗi file có ID khác nhau kể cả khi:
+// - Các file có cùng tên ở cùng đường dẫn (sẽ có database ID khác nhau)
+// - Cùng một file nhưng bị xóa và restore lại (sẽ có LastEventAt khác nhau khi restore)
+// - File được tạo cùng lúc (thêm timestamp hiện tại để đảm bảo unique)
+func uniqueID(deviceUUID string, segments []string, dbID uint, lastEventAt time.Time) string {
+	if len(segments) == 0 {
+		return ""
+	}
+	key := strings.Join(segments, "/")
+	// Kết hợp database ID, LastEventAt và timestamp hiện tại để đảm bảo tính duy nhất
+	// Thêm time.Now() để đảm bảo các file được tạo cùng lúc vẫn có ID khác nhau
+	now := time.Now()
+	combined := fmt.Sprintf("%s|%s|%d|%d|%d", deviceUUID, key, dbID, lastEventAt.UnixNano(), now.UnixNano())
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(combined)).String()
+}
+
 // deterministicID mirrors backend/app/services/filetree_service.go
-// so that deletes/moves can address the correct tree node.
+// Tạo ID cố định từ deviceUUID và logical path segments
+// ID này sẽ được đồng bộ giữa agent và backend
 func deterministicID(deviceUUID string, segments []string) string {
 	if len(segments) == 0 {
 		return ""

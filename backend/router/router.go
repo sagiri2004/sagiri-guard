@@ -23,6 +23,7 @@ func NewRouter(
 	fileTreeCtrl *controllers.FileTreeController,
 	contentTypeCtrl *controllers.ContentTypeController,
 	adminBackupCtrl *controllers.AdminBackupController,
+	websiteBlockCtrl *controllers.WebsiteBlockController,
 	mw *middleware.Auth,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -49,10 +50,12 @@ func NewRouter(
 	register("/admin/online", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Online)))
 	register("/admin/command/queue", mw.RequireAdmin(http.HandlerFunc(cmdCtrl.Queue)))
 
-	// backup admin (versions + restore)
+	// backup admin (versions)
 	if adminBackupCtrl != nil {
 		register("/admin/backup/versions", mw.RequireAdmin(http.HandlerFunc(adminBackupCtrl.ListVersions)))
-		register("/admin/backup/restore", mw.RequireAdmin(http.HandlerFunc(adminBackupCtrl.Restore)))
+		register("/admin/backup/versions/by-file-id", mw.RequireAdmin(http.HandlerFunc(adminBackupCtrl.ListVersionsByFileID)))
+		register("/admin/backup/versions/by-file-id/latest", mw.RequireAdmin(http.HandlerFunc(adminBackupCtrl.GetLatestVersionByFileID)))
+		// Restore command is now sent via /admin/command endpoint
 	}
 
 	// devices
@@ -90,6 +93,33 @@ func NewRouter(
 	register("/content-types/create", mw.RequireAdmin(http.HandlerFunc(contentTypeCtrl.Create)))
 	register("/content-types/update", mw.RequireAdmin(http.HandlerFunc(contentTypeCtrl.Update)))
 	register("/content-types/delete", mw.RequireAdmin(http.HandlerFunc(contentTypeCtrl.Delete)))
+
+	// website blocking (admin only)
+	if websiteBlockCtrl != nil {
+		register("/admin/website-block/rule", mw.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPost:
+				websiteBlockCtrl.CreateRule(w, r)
+			case http.MethodPut:
+				websiteBlockCtrl.UpdateRule(w, r)
+			case http.MethodDelete:
+				websiteBlockCtrl.DeleteRule(w, r)
+			default:
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			}
+		})))
+		register("/admin/website-block/rules", mw.RequireAdmin(http.HandlerFunc(websiteBlockCtrl.ListRules)))
+		register("/admin/website-block/status", mw.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				websiteBlockCtrl.GetStatus(w, r)
+			} else if r.Method == http.MethodPut {
+				websiteBlockCtrl.UpdateStatus(w, r)
+			} else {
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			}
+		})))
+		register("/admin/website-block/sync", mw.RequireAdmin(http.HandlerFunc(websiteBlockCtrl.SyncRules)))
+	}
 
 	return mux
 }

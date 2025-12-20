@@ -419,7 +419,6 @@ int http_request(const char* host, int port, const char* method, const char* pat
         port = DEFAULT_HTTP_PORT; // Dùng cổng 80 nếu không chỉ định
     }
 
-    // Thay đổi: dùng SOCKET và kiểm tra INVALID_SOCKET
     SOCKET fd = connect_socket(host, port, SOCK_STREAM);
     if (fd == INVALID_SOCKET) {
         return -1;
@@ -436,11 +435,10 @@ int http_request(const char* host, int port, const char* method, const char* pat
     char header[4096]; // Buffer để xây dựng header
     size_t offset = 0; // Vị trí hiện tại trong buffer header
 
-    // Xây dựng dòng Request-Line (ví dụ: "GET /path HTTP/1.1\r\n")
     int written = snprintf(header + offset, sizeof(header) - offset,
                            "%s %s HTTP/1.1\r\n", method, path);
     if (written < 0 || (size_t)written >= sizeof(header) - offset) {
-        closesocket(fd); return -1; // Lỗi buffer quá nhỏ
+        closesocket(fd); return -1;
     }
     offset += (size_t)written;
 

@@ -4,6 +4,7 @@ package dto
 type BackupVersionResponse struct {
 	ID          uint   `json:"id"`
 	DeviceID    string `json:"device_id"`
+	FileID      string `json:"file_id"`      // file ID từ agent
 	LogicalPath string `json:"logical_path"`
 	FileName    string `json:"file_name"`
 	StoredName  string `json:"stored_name"`

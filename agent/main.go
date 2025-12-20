@@ -2,9 +2,13 @@ package main
 
 import (
 	"flag"
+	"os"
+	"os/signal"
+	"syscall"
 	"sagiri-guard/agent/internal/auth"
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/db"
+	"sagiri-guard/agent/internal/firewall"
 	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/privilege"
 	"sagiri-guard/agent/internal/service"
@@ -108,9 +112,26 @@ func main() {
 		runAgentClientWithConfig(addr.BackendHost, addr.BackendTCP, headers, *maxRetries, *retryDelay)
 	}()
 
-	// socket running; main blocks
+	// socket running; setup cleanup on shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	select {}
+	// Cleanup function: remove website blocking khi agent shutdown
+	defer func() {
+		logger.Info("Agent shutting down, cleaning up website blocking...")
+		hostsMgr := firewall.GetHostsManager()
+		if hostsMgr != nil && hostsMgr.IsEnabled() {
+			if err := hostsMgr.SetEnabled(false); err != nil {
+				logger.Errorf("Failed to cleanup website blocking: %v", err)
+			} else {
+				logger.Info("Website blocking cleaned up successfully")
+			}
+		}
+	}()
+
+	// Wait for signal
+	<-sigChan
+	logger.Info("Shutdown signal received, exiting...")
 }
 
 func runReadLoop(client *network.TCPClient) error {

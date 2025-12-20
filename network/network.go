@@ -140,6 +140,7 @@ func (c *TCPClient) Write(data []byte) (int, error) {
 		return 0, nil
 	}
 	// C.tcp_send trả về C.ssize_t (mà Go hiểu là C.longlong hoặc C.long)
+	// dịnh dạng data gửi đi là ví dụ "{\"deviceid\":\"1234567890\",\"command\":\"get_status\",\"argument\":{}}"
 	written := C.tcp_send(c.fd, (*C.char)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
 	if written < 0 {
 		return 0, errors.New("send failed")
@@ -226,7 +227,6 @@ func (s *TCPServer) Close() error {
 	return nil
 }
 
-// HTTP helpers (Các hàm này không cần sửa vì chúng không lưu trữ fd)
 func buildExtraHeaders(headers map[string]string) (*C.char, func()) {
 	if len(headers) == 0 {
 		return nil, func() {}

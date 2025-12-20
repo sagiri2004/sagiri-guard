@@ -33,13 +33,14 @@ type UploadInitRequest struct {
 	FileSize    int64  `json:"file_size"`
 	Checksum    string `json:"checksum,omitempty"`
 	LogicalPath string `json:"logical_path,omitempty"`
+	FileID      string `json:"file_id,omitempty"` // file ID từ MonitoredFile
 }
 
 type DownloadInitRequest struct {
 	FileName string `json:"file_name"`
 }
 
-func InitUpload(host string, port int, token string, filePath string) (*Session, error) {
+func InitUpload(host string, port int, token string, filePath string, fileID string) (*Session, error) {
 	info, err := os.Stat(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)
@@ -48,6 +49,7 @@ func InitUpload(host string, port int, token string, filePath string) (*Session,
 		FileName:    filepath.Base(filePath),
 		FileSize:    info.Size(),
 		LogicalPath: filePath,
+		FileID:      fileID, // Gửi file_id lên backend
 	}
 	body, _ := json.Marshal(req)
 	resp, err := callBackupAPI(host, port, "/backup/upload/init", body, authHeaders(token))
