@@ -67,6 +67,11 @@ func (c *TCPClient) Close() error {
 	return nil
 }
 
+// IsOpen reports whether the underlying socket is still valid.
+func (c *TCPClient) IsOpen() bool {
+	return c != nil && c.fd != C.INVALID_SOCKET
+}
+
 func (c *TCPClient) Write(data []byte) (int, error) {
 	// SỬA LỖI: Kiểm tra C.INVALID_SOCKET
 	if c == nil || c.fd == C.INVALID_SOCKET {
@@ -376,6 +381,33 @@ type ProtocolServer struct {
 type ProtocolMessageHandler func(client *TCPClient, msg *ProtocolMessage)
 
 var protocolHandler ProtocolMessageHandler
+
+// DeviceIsOnline queries C-side registry to check if a device has an active protocol connection.
+func DeviceIsOnline(deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	cDev := C.CString(deviceID)
+	defer C.free(unsafe.Pointer(cDev))
+	return C.protocol_device_is_online(cDev) != 0
+}
+
+// SendToDevice uses server-side registry (managed in C) to push a command JSON to a device.
+// This works only for connections handled by the protocol server (not for ad-hoc DialTCP).
+func SendToDevice(deviceID string, jsonPayload []byte) error {
+	if deviceID == "" {
+		return errors.New("device id required")
+	}
+	if len(jsonPayload) == 0 {
+		return errors.New("empty payload")
+	}
+	cDev := C.CString(deviceID)
+	defer C.free(unsafe.Pointer(cDev))
+	if C.protocol_send_to_device(cDev, (*C.char)(unsafe.Pointer(&jsonPayload[0])), C.size_t(len(jsonPayload))) != 0 {
+		return errors.New("send to device failed")
+	}
+	return nil
+}
 
 //export goProtocolMessageBridge
 func goProtocolMessageBridge(clientFd C.SOCKET, cMsg *C.protocol_message_t, userData unsafe.Pointer) {

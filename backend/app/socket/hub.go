@@ -1,7 +1,6 @@
 package socket
 
 import (
-	"errors"
 	"sagiri-guard/backend/global"
 	"sagiri-guard/network"
 	"sync"
@@ -14,7 +13,7 @@ type clientConn struct {
 
 type Hub struct {
 	mu   sync.RWMutex
-	byID map[string]*clientConn
+	byID map[string]*clientConn // keep for listing online devices; send uses C registry
 }
 
 func NewHub() *Hub { return &Hub{byID: make(map[string]*clientConn)} }
@@ -34,6 +33,9 @@ func (h *Hub) Unregister(deviceID string, c *network.TCPClient) {
 }
 
 func (h *Hub) IsOnline(deviceID string) bool {
+	if network.DeviceIsOnline(deviceID) {
+		return true
+	}
 	h.mu.RLock()
 	_, ok := h.byID[deviceID]
 	h.mu.RUnlock()
@@ -42,27 +44,35 @@ func (h *Hub) IsOnline(deviceID string) bool {
 
 // OnlineDevices trả về danh sách tất cả device đang online.
 func (h *Hub) OnlineDevices() []string {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	out := make([]string, 0, len(h.byID))
 	for id := range h.byID {
-		out = append(out, id)
+		if network.DeviceIsOnline(id) {
+			out = append(out, id)
+		} else {
+			delete(h.byID, id) // prune stale entry if C registry says offline
+		}
 	}
 	return out
 }
 
 func (h *Hub) Send(deviceID string, data []byte) error {
-	h.mu.RLock()
-	cc, ok := h.byID[deviceID]
 	global.Logger.Info().Str("device", deviceID).Str("data", string(data)).Msg("Sending data to device")
-	h.mu.RUnlock()
-	if !ok {
-		return errors.New("device offline")
-	}
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	// Gửi dưới dạng protocol command frame
-	if err := cc.c.SendCommand(data); err != nil {
+	if err := network.SendToDevice(deviceID, data); err != nil {
+		// fallback: if we still have a TCPClient cached, try once
+		h.mu.RLock()
+		cc, ok := h.byID[deviceID]
+		h.mu.RUnlock()
+		if ok && cc != nil && cc.c != nil && cc.c.IsOpen() {
+			cc.mu.Lock()
+			err2 := cc.c.SendCommand(data)
+			cc.mu.Unlock()
+			if err2 == nil {
+				global.Logger.Info().Str("device", deviceID).Str("data", string(data)).Msg("Sent data via cached client")
+				return nil
+			}
+		}
 		return err
 	}
 	global.Logger.Info().Str("device", deviceID).Str("data", string(data)).Msg("Sent data to device")

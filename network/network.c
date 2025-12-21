@@ -371,6 +371,87 @@ struct protocol_server {
     void* user_data;
 };
 
+// ---------------------- Device registry (server side) ----------------------
+typedef struct device_entry {
+    char device_id[PROTOCOL_MAX_DEVICE_ID + 1];
+    SOCKET fd;
+    struct device_entry* next;
+} device_entry_t;
+
+static device_entry_t* g_devices = NULL;
+static pthread_mutex_t g_devices_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void registry_set(const char* device_id, SOCKET fd) {
+    if (!device_id || device_id[0] == '\0' || fd == INVALID_SOCKET) return;
+    pthread_mutex_lock(&g_devices_mu);
+    device_entry_t* prev = NULL;
+    device_entry_t* cur = g_devices;
+    while (cur) {
+        if (strncmp(cur->device_id, device_id, PROTOCOL_MAX_DEVICE_ID) == 0) {
+            cur->fd = fd;
+            pthread_mutex_unlock(&g_devices_mu);
+            return;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+    device_entry_t* e = calloc(1, sizeof(device_entry_t));
+    if (e) {
+        strncpy(e->device_id, device_id, PROTOCOL_MAX_DEVICE_ID);
+        e->device_id[PROTOCOL_MAX_DEVICE_ID] = '\0';
+        e->fd = fd;
+        e->next = g_devices;
+        g_devices = e;
+    }
+    pthread_mutex_unlock(&g_devices_mu);
+}
+
+static void registry_remove_fd(SOCKET fd) {
+    if (fd == INVALID_SOCKET) return;
+    pthread_mutex_lock(&g_devices_mu);
+    device_entry_t* prev = NULL;
+    device_entry_t* cur = g_devices;
+    while (cur) {
+        if (cur->fd == fd) {
+            if (prev) prev->next = cur->next;
+            else g_devices = cur->next;
+            free(cur);
+            break;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+    pthread_mutex_unlock(&g_devices_mu);
+}
+
+static SOCKET registry_get(const char* device_id) {
+    if (!device_id || device_id[0] == '\0') return INVALID_SOCKET;
+    SOCKET fd = INVALID_SOCKET;
+    pthread_mutex_lock(&g_devices_mu);
+    for (device_entry_t* cur = g_devices; cur; cur = cur->next) {
+        if (strncmp(cur->device_id, device_id, PROTOCOL_MAX_DEVICE_ID) == 0) {
+            fd = cur->fd;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_devices_mu);
+    return fd;
+}
+
+int protocol_device_is_online(const char* device_id) {
+    return registry_get(device_id) != INVALID_SOCKET;
+}
+
+int protocol_send_to_device(const char* device_id, const char* json, size_t json_len) {
+    SOCKET fd = registry_get(device_id);
+    if (fd == INVALID_SOCKET) return -1;
+    int rc = protocol_send_command(fd, json, json_len);
+    if (rc != 0) {
+        registry_remove_fd(fd);
+    }
+    return rc;
+}
+
 // ---------------------- Send helpers ----------------------
 
 int protocol_send_login(SOCKET fd, const char* device_id, const char* token) {
@@ -661,13 +742,17 @@ static void protocol_connection_handler(SOCKET client_fd, void* user_data) {
         } else if (msg.device_id[0] != '\0') {
             strncpy(last_device, msg.device_id, sizeof(last_device) - 1);
             last_device[sizeof(last_device) - 1] = '\0';
-        }
+            if (msg.type == MSG_LOGIN) {
+                registry_set(last_device, client_fd);
+            }
+            }
 
-        pserver->on_message(client_fd, &msg, pserver->user_data);
-        protocol_message_free(&msg);
+            pserver->on_message(client_fd, &msg, pserver->user_data);
+            protocol_message_free(&msg);
     }
 
     protocol_message_free(&msg);
+    registry_remove_fd(client_fd);
     tcp_close(client_fd);
 }
 

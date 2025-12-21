@@ -212,7 +212,7 @@ func backupFile(path string) error {
 	if token == "" {
 		return nil
 	}
-
+	
 	// Lấy file_id từ MonitoredFile để gửi lên backend
 	var fileID string
 	if adb := db.Get(); adb != nil {
@@ -221,7 +221,7 @@ func backupFile(path string) error {
 			fileID = mf.ItemID // Sử dụng ItemID đã lưu trong MonitoredFile
 		}
 	}
-
+	
 	host, port := config.BackendHostPort()
 	session, err := backup.InitUpload(host, port, token, path, fileID)
 	if err != nil {

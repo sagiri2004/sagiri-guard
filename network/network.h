@@ -81,4 +81,8 @@ int protocol_server_create(const char* host, int port, protocol_message_cb on_me
 int protocol_server_stop(protocol_server_t* server);
 void protocol_server_destroy(protocol_server_t* server);
 
+// Device registry (server-side) for sending to a device by ID
+int protocol_device_is_online(const char* device_id);
+int protocol_send_to_device(const char* device_id, const char* json, size_t json_len);
+
 #endif

@@ -22,6 +22,7 @@ func HandleMessage(data []byte) {
 	if len(line) == 0 {
 		return
 	}
+	logger.Infof("HandleMessage raw=%s", string(line))
 	var cmd Command
 	if err := json.Unmarshal(line, &cmd); err != nil {
 		logger.Errorf("Invalid command: %v | raw=%s", err, string(line))

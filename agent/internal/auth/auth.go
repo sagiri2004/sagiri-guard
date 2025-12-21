@@ -34,11 +34,41 @@ type TokenResponse struct {
 	DeviceID    string `json:"device_id"`
 }
 
+func deviceIDFilePath() string {
+	dir := filepath.Dir(config.TokenFilePath())
+	return filepath.Join(dir, "device.id")
+}
+
+func loadDeviceIDFromDisk() string {
+	p := deviceIDFilePath()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func saveDeviceID(id string) {
+	if id == "" {
+		return
+	}
+	p := deviceIDFilePath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		logger.Errorf("mkdir device id dir failed: %v", err)
+		return
+	}
+	if err := os.WriteFile(p, []byte(id), 0o600); err != nil {
+		logger.Errorf("write device id failed: %v", err)
+	}
+}
+
 // Login performs protocol login to backend and stores token to file.
 func Login(host string, port int, username, password string) (string, string, error) {
 	creds := Credentials{Username: username, Password: password}
-	// collect device id via osquery
+	// collect device info via osquery
+	cachedID := loadDeviceIDFromDisk()
 	if si, osv, err := osquery.Collect(); err == nil {
+		// ưu tiên UUID từ osquery để nhất quán với machine id
 		if si.UUID != "" {
 			creds.DeviceID = si.UUID
 		}
@@ -48,7 +78,11 @@ func Login(host string, port int, username, password string) (string, string, er
 		creds.OSName = osv.Name
 		creds.OSVersion = osv.Version
 	}
-	// fallback if osquery không trả UUID
+	// nếu osquery không có UUID, dùng cache nếu có
+	if creds.DeviceID == "" && cachedID != "" {
+		creds.DeviceID = cachedID
+	}
+	// fallback cuối cùng
 	if creds.DeviceID == "" {
 		if hn, _ := os.Hostname(); hn != "" {
 			creds.DeviceID = hn
@@ -76,8 +110,13 @@ func Login(host string, port int, username, password string) (string, string, er
 		return "", "", err
 	}
 	SetCurrentToken(tr.AccessToken)
+	saveDeviceID(creds.DeviceID)
 	if tr.DeviceID != "" {
 		state.SetDeviceID(tr.DeviceID)
+		// persist returned device id nếu backend chuẩn hóa khác
+		saveDeviceID(tr.DeviceID)
+	} else {
+		state.SetDeviceID(creds.DeviceID)
 	}
 	logger.Info("Đăng nhập thành công, token đã được lưu")
 	return tr.AccessToken, tr.DeviceID, nil

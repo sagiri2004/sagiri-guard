@@ -7,6 +7,8 @@ import (
 	"sagiri-guard/backend/app/dto"
 	"sagiri-guard/backend/app/models"
 
+	"github.com/google/uuid"
+
 	"gorm.io/gorm"
 )
 
@@ -23,7 +25,8 @@ func (c *ProtocolController) handleLogin(msgDeviceID string, payload json.RawMes
 		deviceID = msgDeviceID
 	}
 	if deviceID == "" {
-		return nil, errors.New("missing device id")
+		// allow admin/headless login without device id
+		deviceID = "admin-" + uuid.NewString()
 	}
 	user, err := c.Users.ValidateCredentials(req.Username, req.Password)
 	if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"sagiri-guard/agent/internal/auth"
@@ -27,6 +28,12 @@ func main() {
 		elevate    = flag.Bool("elevate", false, "Attempt to elevate to admin (disable by default for go run)")
 	)
 	flag.Parse()
+
+	// osquery thường cần quyền root để đọc system_info ổn định
+	if os.Geteuid() != 0 {
+		fmt.Println("Agent requires root to collect stable machine UUID. Please run with sudo.")
+		return
+	}
 
 	if err := network.Init(); err != nil {
 		logger.Error("Cannot initialize network library:", err)

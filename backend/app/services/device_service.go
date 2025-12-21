@@ -16,3 +16,7 @@ func (s *DeviceService) UpsertDevice(d *models.Device) error { return s.devices.
 func (s *DeviceService) FindByUUID(uuid string) (*models.Device, error) {
 	return s.devices.FindByUUID(uuid)
 }
+
+func (s *DeviceService) ListAll() ([]models.Device, error) {
+	return s.devices.ListAll()
+}

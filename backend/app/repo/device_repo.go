@@ -18,6 +18,14 @@ func (r *DeviceRepository) FindByUUID(uuid string) (*models.Device, error) {
 	return &d, nil
 }
 
+func (r *DeviceRepository) ListAll() ([]models.Device, error) {
+	var ds []models.Device
+	if err := r.db.Order("created_at DESC").Find(&ds).Error; err != nil {
+		return nil, err
+	}
+	return ds, nil
+}
+
 func (r *DeviceRepository) Upsert(d *models.Device) error {
 	// When exists, update only mutable fields to avoid zeroing CreatedAt
 	var existing models.Device

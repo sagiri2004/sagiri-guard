@@ -1,13 +1,8 @@
-import MainLayout from './layouts/MainLayout'
-import DashboardPage from './pages/dashboard/DashboardPage'
+import AgentsPage from './pages/AgentsPage'
 import './styles/dashboard.css'
 
 function App() {
-  return (
-    <MainLayout>
-      <DashboardPage />
-    </MainLayout>
-  )
+  return <AgentsPage />
 }
 
 export default App

@@ -43,9 +43,15 @@ func SendAction(host string, port int, deviceID string, token string, action str
 	if err := c.SendCommand(b); err != nil {
 		return nil, err
 	}
-	msg, err := c.RecvProtocolMessage()
-	if err != nil {
-		return nil, err
+	for {
+		msg, err := c.RecvProtocolMessage()
+		if err != nil {
+			return nil, err
+		}
+		// Backend có thể đẩy pending command ngay khi kết nối, không phải ACK cho action này.
+		if msg.Type != network.MsgAck {
+			continue
+		}
+		return msg, nil
 	}
-	return msg, nil
 }

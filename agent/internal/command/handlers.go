@@ -58,6 +58,7 @@ func (h getLogsHandler) HandleOnce(arg any) error {
 		return nil
 	}
 	deviceID := state.GetDeviceID()
+	logger.Infof("Sending logs to backend, bytes=%d device=%s", len(data), deviceID)
 	// backend address (single protocol port)
 	host, port := config.BackendHostPort()
 	q := url.Values{}
@@ -65,7 +66,9 @@ func (h getLogsHandler) HandleOnce(arg any) error {
 	msg, err := protocolclient.SendAction(host, port, deviceID, token, "agent_log", map[string]string{"lines": string(data)})
 	if err != nil || msg.Type != network.MsgAck || msg.StatusCode >= 300 {
 		logger.Errorf("post logs failed: %v code=%d msg=%s", err, msg.StatusCode, msg.StatusMsg)
+		return nil
 	}
+	logger.Infof("Posted logs success, status=%d", msg.StatusCode)
 	return nil
 }
 func (h getLogsHandler) Start(arg any) (func() error, error) { return nil, nil }

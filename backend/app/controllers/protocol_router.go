@@ -63,8 +63,8 @@ func (c *ProtocolController) handleSubCommand(client *network.TCPClient, msg *ne
 		Str("action", env.Action).
 		Int("payload_len", len(payload)).
 		Msg("protocol sub-command received")
-	// login does not require token; others require issued token
-	if env.Action != "login" {
+	// login and admin_* do not require device token; others require issued token
+	if env.Action != "login" && env.Action != "admin_send_command" && env.Action != "admin_list_devices" && env.Action != "admin_list_online" {
 		if !c.isAuthorized(msg.DeviceID) {
 			_ = client.SendAck(401, "unauthorized")
 			return
@@ -113,6 +113,21 @@ func (c *ProtocolController) handleSubCommand(client *network.TCPClient, msg *ne
 		if err := c.handleBackupDownloadStart(client, msg.DeviceID, payload); err != nil {
 			_ = client.SendAck(500, err.Error())
 		}
+	case "admin_send_command":
+		if data, err := c.handleAdminSendCommand(payload); err != nil {
+			_ = client.SendAck(500, err.Error())
+		} else {
+			c.sendAckJSON(client, 200, data)
+		}
+	case "admin_list_devices":
+		if data, err := c.handleAdminListDevices(); err != nil {
+			_ = client.SendAck(500, err.Error())
+		} else {
+			c.sendAckJSON(client, 200, data)
+		}
+	case "admin_list_online":
+		data := c.handleAdminListOnline()
+		c.sendAckJSON(client, 200, data)
 	default:
 		_ = client.SendAck(400, "unknown action")
 	}

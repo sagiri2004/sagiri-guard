@@ -53,20 +53,30 @@ func NewProtocolController(h *socket.Hub, r *repo.AgentCommandRepository, device
 
 func (c *ProtocolController) sendAckJSON(client *network.TCPClient, code int, payload any) {
 	if payload == nil {
-		_ = client.SendAck(uint16(code), "")
+		if err := client.SendAck(uint16(code), ""); err != nil {
+			global.Logger.Error().Err(err).Msg("send ack failed")
+		}
 		return
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
-		_ = client.SendAck(uint16(code), err.Error())
+		if er := client.SendAck(uint16(code), err.Error()); er != nil {
+			global.Logger.Error().Err(er).Msg("send ack failed")
+		}
 		return
 	}
-	// status_msg size limited; truncate if needed
-	const maxLen = 900
+	// status_msg size limited by protocol (PROTOCOL_MAX_MESSAGE)
+	const maxLen = 1024
 	if len(b) > maxLen {
-		b = b[:maxLen]
+		global.Logger.Warn().Int("len", len(b)).Msg("ack payload too large, sending error")
+		if err := client.SendAck(uint16(413), "response too large"); err != nil {
+			global.Logger.Error().Err(err).Msg("send ack failed")
+		}
+		return
 	}
-	_ = client.SendAck(uint16(code), string(b))
+	if err := client.SendAck(uint16(code), string(b)); err != nil {
+		global.Logger.Error().Err(err).Msg("send ack failed")
+	}
 }
 
 func (c *ProtocolController) isAuthorized(deviceID string) bool {
