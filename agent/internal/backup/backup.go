@@ -92,7 +92,21 @@ func UploadFile(session *Session, filePath string) error {
 	}
 	defer client.Close()
 
+	// Set login on this transfer socket so backend knows device_id (registry + logging)
+	if devID := state.GetDeviceID(); devID != "" && session.Token != "" {
+		if err := client.SendLogin(devID, session.Token); err != nil {
+			global.Logger.Warn().Err(err).Msg("backup upload: send login failed (continue without device_id)")
+		} else {
+			global.Logger.Debug().Str("device", devID).Msg("backup upload: login sent on transfer socket")
+		}
+	}
+
 	// send file meta
+	global.Logger.Info().
+		Str("file", session.FileName).
+		Int64("size", session.FileSize).
+		Str("session", session.SessionID).
+		Msg("backup upload: sending file meta")
 	if err := client.SendFileMeta(session.FileName, uint64(session.FileSize)); err != nil {
 		return fmt.Errorf("send file meta: %w", err)
 	}
@@ -106,8 +120,18 @@ func UploadFile(session *Session, filePath string) error {
 	for {
 		n, err := file.Read(dataBuf)
 		if n > 0 {
+			global.Logger.Debug().
+				Str("session", session.SessionID).
+				Int64("file_size", session.FileSize).
+				Uint32("offset", offset).
+				Int("size", n).
+				Msg("backup upload: sending chunk")
 			if err := client.SendFileChunkWithSession(session.SessionID, session.Token, offset, dataBuf[:n]); err != nil {
-				return fmt.Errorf("send chunk: %w", err)
+				// retry once for transient errors
+				global.Logger.Warn().Err(err).Uint32("offset", offset).Int("size", n).Msg("backup upload: chunk send failed, retrying once")
+				if err := client.SendFileChunkWithSession(session.SessionID, session.Token, offset, dataBuf[:n]); err != nil {
+					return fmt.Errorf("send chunk offset=%d size=%d: %w", offset, n, err)
+				}
 			}
 			offset += uint32(n)
 		}
@@ -118,11 +142,26 @@ func UploadFile(session *Session, filePath string) error {
 			return fmt.Errorf("read file: %w", err)
 		}
 	}
+	global.Logger.Info().
+		Str("session", session.SessionID).
+		Uint32("bytes_sent", offset).
+		Msg("backup upload: sending file done")
 	if err := client.SendFileDoneWithSession(session.SessionID, session.Token); err != nil {
 		return fmt.Errorf("send file done: %w", err)
 	}
 	global.Logger.Info().Msgf("Uploaded %s (%d bytes)", session.FileName, offset)
 	return nil
+}
+
+// looksLikeJWT performs a light check to avoid sending non-JWT tokens via MsgLogin.
+func looksLikeJWT(tok string) bool {
+	dot := 0
+	for i := 0; i < len(tok); i++ {
+		if tok[i] == '.' {
+			dot++
+		}
+	}
+	return dot >= 2
 }
 
 func DownloadFile(session *Session, destPath string) error {
@@ -185,6 +224,7 @@ func DownloadFile(session *Session, destPath string) error {
 	}
 }
 
+/* Unused
 func writeAll(client *network.TCPClient, data []byte) error {
 	total := 0
 	for total < len(data) {
@@ -199,3 +239,4 @@ func writeAll(client *network.TCPClient, data []byte) error {
 	}
 	return nil
 }
+*/

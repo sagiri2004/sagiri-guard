@@ -7,12 +7,12 @@ import (
 	"os/signal"
 	"sagiri-guard/agent/internal/auth"
 	"sagiri-guard/agent/internal/config"
+	"sagiri-guard/agent/internal/connection"
 	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/firewall"
 	"sagiri-guard/agent/internal/logger"
 	"sagiri-guard/agent/internal/privilege"
 	"sagiri-guard/agent/internal/service"
-	"sagiri-guard/agent/internal/socket"
 	"sagiri-guard/agent/internal/state"
 	"sagiri-guard/network"
 	"strings"
@@ -111,14 +111,22 @@ func main() {
 
 	logger.Infof("Agent will retry up to %d times with a base delay of %v...", *maxRetries, *retryDelay)
 
-	// start directory tree sync loop (agent.db -> backend)
-	service.StartFileTreeSyncLoop(token, uuid)
-
-	// use TCP from config
+	// Create ConnectionManager (single persistent connection)
 	addr := cfgVals
-	go func() {
-		runAgentClientWithConfig(addr.BackendHost, addr.BackendPort, token, uuid, *maxRetries, *retryDelay)
-	}()
+	connMgr := connection.New(addr.BackendHost, addr.BackendPort, uuid, token)
+
+	// Connect with retry logic
+	if err := connMgr.Connect(*maxRetries, *retryDelay); err != nil {
+		logger.Error("Failed to establish connection:", err)
+		return
+	}
+	defer connMgr.Close()
+
+	// Start background receive loop
+	connMgr.StartReceiveLoop()
+
+	// Start directory tree sync loop (using ConnectionManager)
+	service.StartFileTreeSyncLoop(connMgr)
 
 	// socket running; setup cleanup on shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -140,77 +148,6 @@ func main() {
 	// Wait for signal
 	<-sigChan
 	logger.Info("Shutdown signal received, exiting...")
-}
-
-func runReadLoop(client *network.TCPClient) error {
-	for {
-		msg, err := client.RecvProtocolMessage()
-		if err != nil {
-			return err
-		}
-		switch msg.Type {
-		case network.MsgCommand:
-			if len(msg.CommandJSON) > 0 {
-				socket.HandleMessage(msg.CommandJSON)
-			}
-		default:
-			// ignore other frames for now
-		}
-	}
-}
-
-func runAgentClientWithConfig(host string, port int, token, deviceID string, maxRetries int, baseDelay time.Duration) {
-	const (
-		maxDelay      = 30 * time.Second
-		backoffFactor = 1.5
-	)
-
-	var retryCount int
-	var delay time.Duration = baseDelay
-
-	for {
-		logger.Infof("Agent is trying to connect to backend %s:%d (attempt #%d)...", host, port, retryCount+1)
-
-		client, err := network.DialTCP(host, port)
-		if err != nil {
-			retryCount++
-			logger.Errorf("Agent cannot connect to backend (attempt #%d): %v", retryCount, err)
-
-			if retryCount >= maxRetries {
-				logger.Errorf("Agent has tried to connect %d times but failed. Stopping retries.", maxRetries)
-				return
-			}
-
-			logger.Infof("Agent will retry in %v...", delay)
-			time.Sleep(delay)
-
-			// Exponential backoff với jitter
-			delay = time.Duration(float64(delay) * backoffFactor)
-			if delay > maxDelay {
-				delay = maxDelay
-			}
-			continue
-		}
-
-		// Kết nối thành công, reset retry counter
-		retryCount = 0
-		delay = baseDelay
-		logger.Infof("Agent connected to backend %s:%d successfully!", host, port)
-
-		// Gửi login frame (device + token)
-		if err := client.SendLogin(deviceID, token); err != nil {
-			logger.Errorf("Agent cannot send login to backend: %v", err)
-			client.Close()
-			continue
-		}
-
-		// Read loop until disconnect
-		if err := runReadLoop(client); err != nil {
-			logger.Errorf("Agent ping loop failed: %v. Will retry...", err)
-			client.Close()
-			time.Sleep(2 * time.Second) // Short delay before retry
-		}
-	}
 }
 
 func loadOrPromptToken() (string, string, error) {

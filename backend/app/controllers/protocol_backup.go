@@ -184,6 +184,15 @@ func (c *ProtocolController) handleFileDone(msg *network.ProtocolMessage) {
 		global.Logger.Error().Err(err).Msg("mark upload complete failed")
 		return
 	}
+	if err := c.Backup.FinalizeUpload(sess.ID); err != nil {
+		global.Logger.Error().Err(err).Str("session", sess.ID).Msg("finalize upload failed (rename .part/.path)")
+		return
+	}
+	global.Logger.Info().
+		Str("device", msg.DeviceID).
+		Str("session", sess.ID).
+		Str("file", sess.FinalPath).
+		Msg("backup upload finalized")
 	c.mu.Lock()
 	delete(c.activeUpload, msg.SessionID)
 	c.mu.Unlock()

@@ -26,7 +26,7 @@ func (h *Hub) Register(deviceID string, c *network.TCPClient) {
 
 func (h *Hub) Unregister(deviceID string, c *network.TCPClient) {
 	h.mu.Lock()
-	if cur, ok := h.byID[deviceID]; ok && cur.c == c {
+	if cur, ok := h.byID[deviceID]; ok && cur.c.Equal(c) {
 		delete(h.byID, deviceID)
 	}
 	h.mu.Unlock()
@@ -44,16 +44,22 @@ func (h *Hub) IsOnline(deviceID string) bool {
 
 // OnlineDevices trả về danh sách tất cả device đang online.
 func (h *Hub) OnlineDevices() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.mu.RLock()
 	out := make([]string, 0, len(h.byID))
 	for id := range h.byID {
 		if network.DeviceIsOnline(id) {
 			out = append(out, id)
-		} else {
-			delete(h.byID, id) // prune stale entry if C registry says offline
 		}
 	}
+	h.mu.RUnlock()
+
+	// Debug log summary
+	global.Logger.Debug().
+		Int("cached", len(h.byID)).
+		Int("online", len(out)).
+		Strs("online_ids", out).
+		Msg("hub online devices")
+
 	return out
 }
 

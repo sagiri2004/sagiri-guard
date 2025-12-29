@@ -22,7 +22,7 @@
 #define PROTOCOL_MAX_TOKEN     1024
 #define PROTOCOL_MAX_SESSION   128
 #define PROTOCOL_MAX_FILENAME  512
-#define PROTOCOL_MAX_MESSAGE   1024
+#define PROTOCOL_MAX_MESSAGE   4096   // max status message/ACK payload
 
 #pragma pack(push, 1)
 typedef struct protocol_frame_header {

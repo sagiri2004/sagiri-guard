@@ -11,6 +11,7 @@ import (
 	"sagiri-guard/backend/app/models"
 	"sagiri-guard/backend/app/repo"
 	"sagiri-guard/backend/config"
+	"strings"
 	"sync"
 	"time"
 )
@@ -241,8 +242,24 @@ func (s *BackupService) FinalizeUpload(id string) error {
 	if sess.TempPath == "" {
 		return errors.New("missing temp path")
 	}
+	// Rename .part (or .path) -> final file
 	if err := os.Rename(sess.TempPath, sess.FinalPath); err != nil {
-		return fmt.Errorf("finalize upload: %w", err)
+		// Fallback: if temp has ".path" suffix instead of ".part"
+		if strings.HasSuffix(sess.TempPath, ".path") {
+			if err2 := os.Rename(sess.TempPath, sess.FinalPath); err2 != nil {
+				return fmt.Errorf("finalize upload: %w | fallback .path rename failed: %v", err, err2)
+			}
+		} else if alt := sess.FinalPath + ".path"; strings.HasSuffix(alt, ".path") {
+			if _, statErr := os.Stat(alt); statErr == nil {
+				if err3 := os.Rename(alt, sess.FinalPath); err3 != nil {
+					return fmt.Errorf("finalize upload: %w | fallback rename from .path failed: %v", err, err3)
+				}
+			} else {
+				return fmt.Errorf("finalize upload: %w", err)
+			}
+		} else {
+			return fmt.Errorf("finalize upload: %w", err)
+		}
 	}
 	sess.Status = dto.SessionCompleted
 	sess.BytesDone = sess.FileSize

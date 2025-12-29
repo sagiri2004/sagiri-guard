@@ -20,7 +20,13 @@ func StartProtocolServer(host string, port int, ctrl *controllers.ProtocolContro
 			Msg("protocol frame received")
 		ctrl.HandleMessage(client, msg)
 	}
-	_, err := network.ListenProtocol(host, port, handler)
+	disconnectHandler := func(client *network.TCPClient, deviceID string) {
+		global.Logger.Info().
+			Str("device", deviceID).
+			Msg("protocol client disconnected")
+		ctrl.HandleDisconnect(client, deviceID)
+	}
+	_, err := network.ListenProtocolWithDisconnect(host, port, handler, disconnectHandler)
 	if err != nil {
 		return err
 	}

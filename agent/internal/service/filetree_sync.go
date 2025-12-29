@@ -10,8 +10,7 @@ import (
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/logger"
-	"sagiri-guard/agent/internal/protocolclient"
-	"sagiri-guard/network"
+	"sagiri-guard/agent/internal/state"
 
 	"github.com/google/uuid"
 )
@@ -31,26 +30,36 @@ type fileTreeChange struct {
 	ContentTypes   []uint `json:"content_type_ids"`
 }
 
+// ConnectionSender interface for sending commands
+type ConnectionSender interface {
+	Send(action string, data interface{}) error
+}
+
 // StartFileTreeSyncLoop periodically flushes local MonitoredFile rows to backend /filetree/sync.
-func StartFileTreeSyncLoop(token, deviceUUID string) {
-	if strings.TrimSpace(token) == "" || strings.TrimSpace(deviceUUID) == "" {
+func StartFileTreeSyncLoop(connMgr ConnectionSender) {
+	if connMgr == nil {
 		return
 	}
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := syncFileTreeOnce(token, deviceUUID); err != nil {
+			if err := syncFileTreeOnce(connMgr); err != nil {
 				logger.Errorf("file tree sync failed: %v", err)
 			}
 		}
 	}()
 }
 
-func syncFileTreeOnce(token, deviceUUID string) error {
+func syncFileTreeOnce(connMgr ConnectionSender) error {
 	adb := db.Get()
 	if adb == nil {
 		return nil
+	}
+
+	deviceUUID := state.GetDeviceID()
+	if deviceUUID == "" {
+		return fmt.Errorf("device UUID not set")
 	}
 
 	// Query các file cần sync:
@@ -102,8 +111,8 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 		}
 
 		// Xây dựng đường dẫn logic dựa trên folder được monitor.
-		// Ví dụ: monitor "C:\Users\izumi\Downloads\Demo" => root logic = "Demo",
-		// file "C:\Users\izumi\Downloads\Demo\a\b.txt" => segments = ["Demo","a","b.txt"].
+		// Ví dụ: monitor "C:\\Users\\izumi\\Downloads\\Demo" => root logic = "Demo",
+		// file "C:\\Users\\izumi\\Downloads\\Demo\\a\\b.txt" => segments = ["Demo","a","b.txt"].
 		logicalSegments := buildLogicalSegments(path)
 		if len(logicalSegments) == 0 {
 			// fallback: dùng full path tách segment như cũ
@@ -115,7 +124,7 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 		// để đảm bảo mỗi file instance có ID unique (kể cả khi cùng path và name)
 		itemID := row.ItemID
 		if itemID == "" {
-			// Chưa có ItemID, tạo mới bằng uniqueID với timestamp để đảm bảo tính duy nhất
+			// Chưa có ItemID, tạo mới bằng unique ID với timestamp để đảm bảo tính duy nhất
 			// Sử dụng database ID và LastEventAt để phân biệt các file instance khác nhau
 			itemID = uniqueID(deviceUUID, logicalSegments, row.ID, row.LastEventAt)
 			// Lưu ItemID vào MonitoredFile để dùng cho các lần sync sau
@@ -160,7 +169,7 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 		return nil
 	}
 
-	if err := sendFileTreeChanges(token, deviceUUID, changes); err != nil {
+	if err := connMgr.Send("filetree_sync", changes); err != nil {
 		return err
 	}
 
@@ -172,24 +181,6 @@ func syncFileTreeOnce(token, deviceUUID string) error {
 	}
 
 	_ = now
-	return nil
-}
-
-func sendFileTreeChanges(token, deviceUUID string, changes []fileTreeChange) error {
-	cfg := config.Get()
-	host, port := cfg.BackendHost, cfg.BackendPort
-
-	msg, err := protocolclient.SendAction(host, port, deviceUUID, token, "filetree_sync", changes)
-	if err != nil {
-		return err
-	}
-	if msg.Type != network.MsgAck || msg.StatusCode >= 300 {
-		snippet := strings.TrimSpace(msg.StatusMsg)
-		if snippet == "" {
-			snippet = fmt.Sprintf("status %d", msg.StatusCode)
-		}
-		return fmt.Errorf("filetree sync failed: %s", snippet)
-	}
 	return nil
 }
 
@@ -206,8 +197,8 @@ func monitorActionDelete() string  { return "delete" }
 func monitorActionMoveOut() string { return "move_out" }
 
 // buildLogicalSegments chuyển absolute path thành các segment logic, dựa trên MonitorPaths.
-// Ví dụ: MonitorPaths = ["C:\\Users\\izumi\\Downloads\\Demo"]
-// Path = "C:\\Users\\izumi\\Downloads\\Demo\\folder\\file.txt"
+// Ví dụ: MonitorPaths = ["C:\\\\Users\\\\izumi\\\\Downloads\\\\Demo"]
+// Path = "C:\\\\Users\\\\izumi\\\\Downloads\\\\Demo\\\\folder\\\\file.txt"
 // => ["Demo", "folder", "file.txt"]
 func buildLogicalSegments(p string) []string {
 	cfg := config.Get()

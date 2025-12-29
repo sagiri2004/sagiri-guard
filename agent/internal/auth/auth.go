@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/google/uuid"
-
 	"sagiri-guard/agent/internal/config"
 	"sagiri-guard/agent/internal/db"
 	"sagiri-guard/agent/internal/logger"
@@ -16,6 +14,8 @@ import (
 	"sagiri-guard/agent/internal/protocolclient"
 	"sagiri-guard/agent/internal/state"
 	"sagiri-guard/network"
+
+	"github.com/google/uuid"
 )
 
 type Credentials struct {
